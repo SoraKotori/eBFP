@@ -4,6 +4,7 @@
         {
             "name": "default",
             "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build/${presetName}",
             "hidden": true,
             "cacheVariables": {
                 "CMAKE_C_COMPILER": "clang-19",
