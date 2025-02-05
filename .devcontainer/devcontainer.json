@@ -5,13 +5,18 @@
         "target": "development"
     },
     "runArgs": [
+        "--cap-add=SYS_ADMIN",
+        "--cap-add=SYS_RESOURCE",
+        "--ulimit", "memlock=-1:-1",
+        "--privileged",
+        "--security-opt=seccomp=unconfined"
     ],
     "customizations": {
         "vscode": {
             "extensions": [
                 "ms-vscode.cpptools-extension-pack",
                 "ms-azuretools.vscode-docker",
-				"GitHub.copilot"
+                "GitHub.copilot"
             ]
         }
     }
