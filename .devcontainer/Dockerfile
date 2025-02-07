@@ -2,7 +2,7 @@ FROM ubuntu:25.04 AS base
 
 RUN apt-get update && export DEBIAN_FRONTEND=noninteractive && \
     apt-get -y install --no-install-recommends \
-    cmake ninja-build
+    cmake
 
 RUN apt-get update && export DEBIAN_FRONTEND=noninteractive && \
     apt-get -y install --no-install-recommends \
@@ -10,7 +10,7 @@ RUN apt-get update && export DEBIAN_FRONTEND=noninteractive && \
 
 RUN apt-get update && export DEBIAN_FRONTEND=noninteractive && \
     apt-get -y install --no-install-recommends \
-    make pkg-config libelf1 libelf-dev zlib1g-dev # libbpf bpftool
+    make libelf1 libelf-dev zlib1g-dev pkg-config # libbpf bpftool
 
 FROM base AS development
 
