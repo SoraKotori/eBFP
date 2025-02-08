@@ -26,8 +26,8 @@ bpftool btf dump file /sys/kernel/btf/vmlinux format c > vmlinux.h
 
 # 生成 bootstrap.bpf.o
 clang -g \
-         -target bpf \
-         -c bootstrap.bpf.c -o bootstrap.bpf.o
+      -target bpf \
+      -c bootstrap.bpf.c -o bootstrap.bpf.o
 /usr/lib/llvm-19/bin/llvm-strip -g bootstrap.bpf.o
 
 bpftool gen skeleton bootstrap.bpf.o > bootstrap.skel.h
