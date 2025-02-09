@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.28)
 
 project(eBPF)
 
+# 加入 cmake 模組
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/cmake)
 
 include(ExternalProject)
@@ -23,13 +24,6 @@ ExternalProject_Add(libbpf
 set(LIBBPF_LIBRARIES ${CMAKE_BINARY_DIR}/libbpf-prefix/usr/lib64/libbpf.a)
 set(LIBBPF_INCLUDE_DIRS ${CMAKE_BINARY_DIR}/libbpf-prefix/usr/include)
 
-# add_library(bpf STATIC IMPORTED)
-# set_target_properties(bpf PROPERTIES
-#     IMPORTED_LOCATION ${LIBBPF_LIBRARIES}
-#     INTERFACE_INCLUDE_DIRECTORIES ${LIBBPF_INCLUDE_DIRS}
-# )
-# add_dependencies(bpf libbpf)
-
 # 編譯 bpftool 的 bootstrap 階段
 ExternalProject_Add(bpftool
     SOURCE_DIR ${CMAKE_SOURCE_DIR}/bpftool/src
@@ -46,17 +40,10 @@ ExternalProject_Add(bpftool
     DEPENDS libbpf
 )
 
+# 指定 bpftool 執行檔的位置
 set(BPFOBJECT_BPFTOOL_EXE ${CMAKE_BINARY_DIR}/bpftool-prefix/src/bpftool-build/bpftool)
-# set(BPFOBJECT_VMLINUX_H   ${CMAKE_BINARY_DIR}/bpftool-prefix/src/bpftool-build/vmlinux.h)
-find_package(BpfObject REQUIRED)
 
-# 產生 BPF 需要的 vmlinux.h
-# add_custom_command(
-#     OUTPUT  ${BPFOBJECT_VMLINUX_H}
-#     COMMAND ${BPFOBJECT_BPFTOOL_EXE} btf dump file /sys/kernel/btf/vmlinux format c > ${BPFOBJECT_VMLINUX_H}
-#     DEPENDS bpftool
-#     COMMENT "Dumping vmlinux.h via bpftool..."
-# )
+find_package(BpfObject REQUIRED)
 
 bpf_object(bootstrap bootstrap.bpf.c)
 add_executable(bootstrap bootstrap.c)
