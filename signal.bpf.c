@@ -2,27 +2,20 @@
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 
-#define MAX_ENTRIES 10240
-#define TASK_COMM_LEN 16
-
-struct event {
-    pid_t pid;
-    pid_t target_pid;
-    int signal;
-    int ret;
-    char comm[TASK_COMM_LEN];
-};
+#include "signal.h"
 
 struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, MAX_ENTRIES);
-    __type(key, pid_t);
-    __type(value, struct event);
-} values SEC(".maps");
+    __uint(type, BPF_MAP_TYPE_PERF_EVENT_ARRAY);
+    __type(key_size, sizeof(pid_t));
+    __type(value_size, sizeof(struct event));
+} events SEC(".maps");
 
-
-static int probe_entry(pid_t target_pid, int sig)
+SEC("tracepoint/syscalls/sys_enter_kill")
+int kill_entry(struct trace_event_raw_sys_enter *ctx)
 {
+    pid_t target_pid = (pid_t)ctx->args[0];
+    int sig = (int)ctx->args[1];
+
     __u64 pid_tgid = bpf_get_current_pid_tgid();
     __u32 tid = (__u32)pid_tgid;
 
@@ -36,7 +29,8 @@ static int probe_entry(pid_t target_pid, int sig)
     return 0;
 }
 
-static int probe_exit(void *ctx, int ret)
+SEC("tracepoint/syscalls/sys_exit_kill")
+int kill_exit(struct trace_event_raw_sys_exit *ctx)
 {
     __u64 pid_tgid = bpf_get_current_pid_tgid();
     __u32 tid = (__u32)pid_tgid;
@@ -45,28 +39,13 @@ static int probe_exit(void *ctx, int ret)
     if (!eventp)
         return 0;
 
-    eventp->ret = ret;
+    eventp->ret = ctx->ret;
     bpf_printk("PID %d (%s) sent signal %d ", eventp->pid, eventp->comm, eventp->signal);
-    bpf_printk("to PID %d, ret = %d", eventp->target_pid, ret);
+    bpf_printk("to PID %d, ret = %d", eventp->target_pid, ctx->ret);
 
 cleanup:
     bpf_map_delete_elem(&values, &tid);
     return 0;
-}
-
-SEC("tracepoint/syscalls/sys_enter_kill")
-int kill_entry(struct trace_event_raw_sys_enter *ctx)
-{
-    pid_t target_pid = (pid_t)ctx->args[0];
-    int sig = (int)ctx->args[1];
-
-    return probe_entry(target_pid, sig);
-}
-
-SEC("tracepoint/syscalls/sys_exit_kill")
-int kill_exit(struct trace_event_raw_sys_exit *ctx)
-{
-    return probe_exit(ctx, ctx->ret);
 }
 
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
