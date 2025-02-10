@@ -49,3 +49,8 @@ bpf_object(bootstrap bootstrap.bpf.c)
 add_executable(bootstrap bootstrap.c)
 target_link_libraries(bootstrap bootstrap_skel)
 target_compile_features(bootstrap PRIVATE cxx_std_23)
+
+bpf_object(signal signal.bpf.c)
+add_executable(signal signal.cpp)
+target_link_libraries(signal signal_skel)
+target_compile_features(signal PRIVATE cxx_std_23)
