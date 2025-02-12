@@ -2,7 +2,7 @@
 #define TASK_COMM_LEN 16
 
 struct event {
-    pid_t pid;
+    pid_t sender_pid;
     pid_t target_pid;
     int signal;
     int ret;
