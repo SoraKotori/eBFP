@@ -29,40 +29,33 @@ int main(int argc, char *argv[])
     if (auto error = signal_bpf::attach(skel.get()); error)
         return EXIT_FAILURE;
 
-    struct perf_buffer_opts pb_opts = {
-        .sz = sizeof(struct perf_buffer_opts),
-        // 您可視需要設定 .sample_period 等欄位
-    };
+    struct perf_buffer_opts pb_opts = { .sz = sizeof(struct perf_buffer_opts), };
 
-    int err;
     // 4. 建立 perf buffer
-    struct perf_buffer *pb = perf_buffer__new(
+    std::unique_ptr<struct perf_buffer, decltype(&perf_buffer__free)> pb(perf_buffer__new(
         bpf_map__fd(skel->maps.events),
         8,              // page_cnt
         handle_event,   // sample_cb
-        nullptr,    // lost_cb (如果不需要可填 NULL)
+        nullptr,        // lost_cb (如果不需要可填 NULL)
         NULL,           // ctx
         &pb_opts        // 其他選項
-    );
-    if (!pb) {
+    ), &perf_buffer__free);
+    if (pb == nullptr) {
         int err = -errno;
         fprintf(stderr, "Failed to create perf buffer: %d\n", err);
-        goto cleanup;
+        return EXIT_FAILURE;
     }
 
     printf("Successfully started! Ctrl+C to stop.\n");
 
     // 5. 進入輪詢 loop
     while (true) {
-        int err = perf_buffer__poll(pb, 100 /* ms */);
+        int err = perf_buffer__poll(pb.get(), 100 /* ms */);
         if (err < 0 && err != -EINTR) {
             fprintf(stderr, "Error polling perf buffer: %d\n", err);
             break;
         }
     }
 
-cleanup:
-    // 5. 收尾階段
-    perf_buffer__free(pb);
     return 0;
 }
