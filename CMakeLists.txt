@@ -42,15 +42,27 @@ ExternalProject_Add(bpftool
 
 # 指定 bpftool 執行檔的位置
 set(BPFOBJECT_BPFTOOL_EXE ${CMAKE_BINARY_DIR}/bpftool-prefix/src/bpftool-build/bpftool)
+set(BPFOBJECT_VMLINUX_H   ${CMAKE_BINARY_DIR}/bpftool-prefix/src/bpftool-build/vmlinux.h)
+
+# 產生 BPF 需要的 vmlinux.h
+add_custom_command(
+    OUTPUT  ${BPFOBJECT_VMLINUX_H}
+    COMMAND ${BPFOBJECT_BPFTOOL_EXE} btf dump file /sys/kernel/btf/vmlinux format c > ${BPFOBJECT_VMLINUX_H}
+    DEPENDS bpftool
+    COMMENT "Dumping vmlinux.h via bpftool..."
+)
+add_custom_target(vmlinux_h DEPENDS "${BPFOBJECT_VMLINUX_H}")
 
 find_package(BpfObject REQUIRED)
 
 bpf_object(bootstrap bootstrap.bpf.c)
 add_executable(bootstrap bootstrap.c)
+add_dependencies(bootstrap_skel vmlinux_h)
 target_link_libraries(bootstrap bootstrap_skel)
 target_compile_features(bootstrap PRIVATE cxx_std_23)
 
 bpf_object(signal signal.bpf.c)
 add_executable(signal signal.cpp)
+add_dependencies(signal_skel vmlinux_h)
 target_link_libraries(signal signal_skel)
 target_compile_features(signal PRIVATE cxx_std_23)
