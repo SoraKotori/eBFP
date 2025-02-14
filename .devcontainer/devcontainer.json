@@ -4,11 +4,16 @@
         "dockerfile": "Dockerfile",
         "target": "development"
     },
-    "runArgs": [
-        "--cap-add=CAP_BPF",
-        "--cap-add=CAP_PERFMON",
-        "--ulimit", "memlock=-1:-1",
-        "--mount", "type=bind,source=/sys/kernel/debug,target=/sys/kernel/debug"
+    "capAdd": [
+        "CAP_BPF",
+        "CAP_PERFMON"
+    ],
+    "mounts": [
+        {
+            "source": "/sys/kernel/debug",
+            "target": "/sys/kernel/debug",
+            "type": "bind"
+        }
     ],
     "customizations": {
         "vscode": {
