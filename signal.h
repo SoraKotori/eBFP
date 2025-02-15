@@ -1,10 +1,11 @@
-#define MAX_ENTRIES 10240
-#define TASK_COMM_LEN 16
+#pragma onec
 
-struct event {
+struct event
+{
     pid_t sender_pid;
+    pid_t sender_tid;
     pid_t target_pid;
+    pid_t target_tid;
     int signal;
     int ret;
-    char comm[TASK_COMM_LEN];
 };
