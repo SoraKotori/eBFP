@@ -7,11 +7,54 @@
 
 #include "signal.h"
 
+#define MAX_ARG_LEN 4096
+
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, u32);
+    __type(value, char[MAX_ARG_LEN]);
+} command_pattern SEC(".maps");
+
 struct {
     __uint(type, BPF_MAP_TYPE_PERF_EVENT_ARRAY);
     __uint(key_size, sizeof(u32));
     __uint(value_size, sizeof(u32));
 } events SEC(".maps");
+
+SEC("tracepoint/syscalls/sys_enter_execve")
+int sys_enter_execve(struct trace_event_raw_sys_enter *ctx)
+{
+    char buffer[MAX_ARG_LEN];
+
+    long read_size = BPF_CORE_READ_STR_INTO(buffer, ctx, args[0]);
+
+    
+    char* argv = buffer;
+    for (long free_size = MAX_ARG_LEN; free_size && arg_start < arg_end;)
+    {
+        bpf_core_read_user_str(argv, free_size, arg_start);
+
+    }
+    // 讀取 `argv` 陣列 (指標)
+    int count = 0;
+    for (unsigned long addr = arg_start; addr < arg_end && count < MAX_ARGV_COUNT; addr += sizeof(unsigned long)) {
+        bpf_probe_read_user(&argv_ptr[count], sizeof(unsigned long), (void *)addr);
+        if (!argv_ptr[count])  // `argv` 陣列以 NULL 結束
+            break;
+        count++;
+    }
+
+    bpf_printk("Argc: %d\n", count);
+
+    // 讀取 `argv[0]` 的內容
+    if (count > 0) {
+        bpf_probe_read_user(argv, sizeof(argv), (void *)argv_ptr[0]);
+        bpf_printk("Command: %s\n", argv);
+    }
+
+    return 0;
+}
 
 SEC("tracepoint/syscalls/sys_enter_kill")
 int tracepoint__syscalls__sys_enter_kill(struct trace_event_raw_sys_enter *ctx)
