@@ -7,7 +7,7 @@
 
 #include "signal.h"
 
-#define MAX_ARG_LEN 4096
+#define MAX_ARG_LEN 256 // max 484
 
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
@@ -17,42 +17,79 @@ struct {
 } command_pattern SEC(".maps");
 
 struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 8192);
+    __type(key, pid_t);
+    __type(value, char[MAX_ARG_LEN]);
+} commands SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_PERF_EVENT_ARRAY);
+} command_events SEC(".maps");
+
+struct {
     __uint(type, BPF_MAP_TYPE_PERF_EVENT_ARRAY);
     __uint(key_size, sizeof(u32));
     __uint(value_size, sizeof(u32));
 } events SEC(".maps");
 
+long make_command(char *const command, const char *const *argv)
+{
+    long read_size = 0;
+    while (read_size < MAX_ARG_LEN && *argv)
+    {
+        long length = bpf_core_read_user_str(command + read_size, MAX_ARG_LEN - read_size, *argv++);
+        if  (length < 0)
+            return length;
+
+        read_size += length;
+        command[read_size - 1] = ' ';
+    }
+    if (read_size)
+        command[read_size - 1] = '\0';
+
+    return read_size;
+}
+
 SEC("tracepoint/syscalls/sys_enter_execve")
 int sys_enter_execve(struct trace_event_raw_sys_enter *ctx)
 {
-    char buffer[MAX_ARG_LEN];
+    const char *const *argv = NULL;
+    if (BPF_CORE_READ_INTO(&argv, ctx, args[1]))
+        return 0;
 
-    long read_size = BPF_CORE_READ_STR_INTO(buffer, ctx, args[0]);
+    __u64 pid_tgid = bpf_get_current_pid_tgid();
+    pid_t pid  = pid_tgid;          // thread ID
+    pid_t tgid = pid_tgid >> 32;    // process ID
 
-    
-    char* argv = buffer;
-    for (long free_size = MAX_ARG_LEN; free_size && arg_start < arg_end;)
+    char* const command = bpf_map_lookup_elem(&commands, &pid);
+
+    if (command)
     {
-        bpf_core_read_user_str(argv, free_size, arg_start);
-
+        long read_size = make_command(command, argv);
+        if  (read_size < 0)
+            return 0;
     }
-    // 讀取 `argv` 陣列 (指標)
-    int count = 0;
-    for (unsigned long addr = arg_start; addr < arg_end && count < MAX_ARGV_COUNT; addr += sizeof(unsigned long)) {
-        bpf_probe_read_user(&argv_ptr[count], sizeof(unsigned long), (void *)addr);
-        if (!argv_ptr[count])  // `argv` 陣列以 NULL 結束
-            break;
-        count++;
+    else
+    {
+        char new_command[MAX_ARG_LEN];
+        long read_size = make_command(command, argv);
+        if  (read_size < 0)
+            return 0;
+
+        if (bpf_map_update_elem(&commands, &pid, new_command, BPF_ANY))
+            return 0;
     }
-
-    bpf_printk("Argc: %d\n", count);
-
-    // 讀取 `argv[0]` 的內容
-    if (count > 0) {
-        bpf_probe_read_user(argv, sizeof(argv), (void *)argv_ptr[0]);
-        bpf_printk("Command: %s\n", argv);
-    }
-
+    
+    struct command_event event =
+    {
+        .pid = pid,
+        .tgid = tgid
+    };
+    
+    if (bpf_perf_event_output(ctx, &command_events, BPF_F_CURRENT_CPU, &event, sizeof(event)))
+        return 0;
+    
     return 0;
 }
 
@@ -66,8 +103,8 @@ int tracepoint__syscalls__sys_enter_kill(struct trace_event_raw_sys_enter *ctx)
 
     struct event event =
     {
-        .sender_pid = pid_tgid >> 32,
-        .sender_tid = pid_tgid,
+        .sender_pid = pid_tgid >> 32,   // process ID
+        .sender_tid = pid_tgid,         // thread ID
         .target_pid = ctx->args[0],
         .signal     = ctx->args[1]
     };
@@ -88,7 +125,8 @@ int raw_tracepoint__sys_enter(struct bpf_raw_tracepoint_args *ctx)
     };
     
     unsigned long args[3];
-    BPF_CORE_READ_INTO(&args, ctx, args);
+    if (BPF_CORE_READ_INTO(&args, ctx, args))
+        return 0;
 
     // switch (ctx->id)
     // {

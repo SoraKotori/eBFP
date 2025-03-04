@@ -1,5 +1,11 @@
 #pragma onec
 
+struct command_event
+{
+    pid_t pid;
+    pid_t tgid;
+};
+
 struct event
 {
     pid_t sender_pid;
