@@ -29,94 +29,65 @@ struct {
 	__uint(value_size, sizeof(int));
 } events SEC(".maps");
 
-long make_command(char command[MAX_ARG_LEN], const char *const *argv)
-{
-    command[0] = '\0';
-
-    char *first = command;
-    char *last  = command + MAX_ARG_LEN;
-
-    // 固定迴圈次數，確保迴圈可展開
-    #pragma unroll
-    for (int i = 0; i < 1; i++)
-    {
-        const char *arg = NULL;
-
-        // 從 user space 安全讀取 argv[i] 中的字串指標
-        if (bpf_core_read_user(&arg, sizeof(arg), &argv[i]) < 0)
-            break;
-        if (arg == NULL)
-            break;
-        if (first >= last)
-            break;
-
-        // 讀取使用者空間中的字串內容到 command 中
-        long length = bpf_core_read_user_str(first, last - first, arg);
-        if  (length < 0)
-            return length;
-
-        // 如果不是第一個參數，在前一個字串後面加上空格
-        if (command < first && first < last)
-            *(first - 1) = ' ';
-
-        first += length;
-    }
-
-    return first - command;
-}
-
-bool is_pattern(const char *const command, const char *const pattern)
-{
-    return pattern[0] == '\0';
-}
-
 SEC("tracepoint/syscalls/sys_enter_execve")
 int tracepoint__syscalls__sys_enter_execve(struct trace_event_raw_sys_enter *ctx)
 {
     const char *const *argv = NULL;
-    if (BPF_CORE_READ_INTO(&argv, ctx, args[1]))
+    long error = BPF_CORE_READ_INTO(&argv, ctx, args[1]);
+    if  (error < 0)
         return 0;
 
-    __u64 pid_tgid = bpf_get_current_pid_tgid();
-    pid_t pid  = pid_tgid;          // thread ID
-    pid_t tgid = pid_tgid >> 32;    // process ID
+    // __u64 pid_tgid = bpf_get_current_pid_tgid();
+    // __u64 ktime = bpf_ktime_get_ns();
 
-    char new_command[MAX_ARG_LEN];
-    char* command = bpf_map_lookup_elem(&commands, &pid);
-
-    if (command)
+    struct command_event event =
     {
-        long read_size = make_command(command, argv);
-        if  (read_size < 0)
-            return 0;
-    }
-    else
-    {
-        long read_size = make_command(new_command, argv);
-        if  (read_size < 0)
-            return 0;
-
-        if (bpf_map_update_elem(&commands, &pid, new_command, BPF_ANY))
-            return 0;
-        command = new_command;
-    }
-    
-    u32 key = 0;
-    char *const pattern = bpf_map_lookup_elem(&command_pattern, &key);
-    if (!pattern || !is_pattern(command, pattern))
-        return 0;
-
-    struct event event =
-    {
-        .id = ctx->id,
-        .command =
-        {
-            .pid = pid,
-            .tgid = tgid
-        }
+        .base.id = ctx->id,
+        .pid_tgid = bpf_get_current_pid_tgid(),
+        .ktime = bpf_ktime_get_ns()
+        // .pid     = pid_tgid,       // thread ID
+        // .tgid    = pid_tgid >> 32  // process ID
     };
-    
-    if (0 > bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU, &event, sizeof(event)))
+
+    int i = 0;
+
+    #pragma unroll
+    for (; i < MAX_ARGS; i++)
+    {
+        const char *argv_i = NULL;
+
+        // 從 user space 讀取 argv[i] 中的字串指標
+        error = bpf_core_read_user(&argv_i, sizeof(argv_i), argv + i);
+        if (error < 0)
+            return 0;
+
+        if (argv_i == NULL)
+            break;
+
+        // 讀取 user space 中 argv[i] 的字串內容到 event 中
+        error = bpf_core_read_user_str(event.argv_i, sizeof(event.argv_i), argv_i);
+        if (error < 0)
+            return 0;
+
+        event.i = i;
+        
+        error = bpf_perf_event_output(ctx,
+                                      &events,
+                                      BPF_F_CURRENT_CPU,
+                                      &event,
+                                      offsetof(struct command_event, argv_i) + error); // length
+        if (error < 0)
+            return 0;
+    }
+
+    event.i = i;
+
+    error = bpf_perf_event_output(ctx,
+                                  &events,
+                                  BPF_F_CURRENT_CPU,
+                                  &event,
+                                  offsetof(struct command_event, i) + sizeof(event.i));
+    if (error < 0)
         return 0;
     
     return 0;
@@ -125,24 +96,24 @@ int tracepoint__syscalls__sys_enter_execve(struct trace_event_raw_sys_enter *ctx
 SEC("tracepoint/syscalls/sys_enter_kill")
 int tracepoint__syscalls__sys_enter_kill(struct trace_event_raw_sys_enter *ctx)
 {
-    if (!ctx->args[1])
+    if (!ctx->args[1]) // signal == 0
         return 0;
 
     __u64 pid_tgid = bpf_get_current_pid_tgid();
 
-    struct event event =
+    struct signal_event event =
     {
-        .id = ctx->id,
-        .signal =
-        {
-            .sender_pid = pid_tgid >> 32,   // process ID
-            .sender_tid = pid_tgid,         // thread ID
-            .target_pid = ctx->args[0],
-            .signal     = ctx->args[1]
-        }
+        .base.id    = ctx->id,
+        .sender_pid = pid_tgid >> 32,   // process ID
+        .sender_tid = pid_tgid,         // thread ID
+        .target_pid = ctx->args[0],
+        .signal     = ctx->args[1]
     };
     
-    bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU, &event, sizeof(event));
+    long error = bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU, &event, sizeof(event));
+    if  (error < 0)
+        return 0;
+
     return 0;
 }
 
