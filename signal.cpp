@@ -4,6 +4,7 @@
 #include <functional>
 #include <iterator>
 #include <ranges>
+#include <print>
 
 #include <bpf/libbpf.h>
 
@@ -15,44 +16,68 @@
 //     return pattern[0] == '\0';
 // }
 
+struct argument
+{
+    std::size_t argc = 0;
+    std::vector<std::string> argv;
+    int ret = 0;
+};
+
 class sys_enter_execve_handler
 {
-    struct argument
-    {
-        std::size_t argc = 0;
-        std::vector<std::string> argv;
-    };
-
-    std::unordered_map<__u64, argument> map;
+    std::unordered_map<__u64, argument>& map_;
 
 public:
+    sys_enter_execve_handler(decltype(map_) map) :
+        map_{map}
+    {}
+
     void operator()(int cpu, void *data, __u32 size)
     {
         auto event = static_cast<sys_enter_execve_event*>(data);
 
-        auto& arg = map[event->ktime];
+        auto& arg = map_[event->pid_tgid];
+
         if (size > offsetof(sys_enter_execve_event, argv_i))
         {
-            if (std::size(arg.argv) == event->i)
-                arg.argv.emplace_back(event->argv_i, size - offsetof(sys_enter_execve_event, argv_i) - 1); // not include '\0'
+            if (event->i == 0)
+            {
+                arg.argc = 0;
+                arg.argv.clear();
+                arg.ret = 0;
+            }
+
+            if (event->i == std::size(arg.argv))
+                arg.argv.emplace_back(event->argv_i, static_cast<char*>(data) + size - 1); // not include '\0'
         }
         else
-        {
             arg.argc = event->i;
-            std::ranges::copy(arg.argv, std::ostream_iterator<decltype(arg.argv)::value_type>{std::cout, " "});
-            std::cout << std::endl;
-        }
     }
 };
 
 class sys_exit_execve_handler
 {
+    std::unordered_map<__u64, argument>& map_;
+
 public:
+    sys_exit_execve_handler(decltype(map_) map) :
+        map_{map}
+    {}
+
     void operator()(int cpu, void *data, __u32 size)
     {
         auto event = static_cast<sys_exit_execve_event*>(data);
 
-        std::cout << event->ret << std::endl;
+        auto& arg = map_[event->pid_tgid];
+        arg.ret = event->ret;
+
+        std::print("pid: {} tid: {} ret: {:>2} command: ", 
+            static_cast<unsigned>(event->pid_tgid >> 32),  // pid
+            static_cast<unsigned>(event->pid_tgid),        // tid
+            arg.ret);  // `{:>2}` 代表**右對齊、最小2格**
+ 
+        std::ranges::copy(arg.argv, std::ostream_iterator<decltype(arg.argv)::value_type>{std::cout, " "});
+        std::cout << '\n';
     }
 };
 
@@ -60,11 +85,11 @@ static void handle_sys_enter_kill(int cpu, void *data, __u32 size)
 {
     auto event = static_cast<sys_enter_kill_event*>(data);
 
-    std::cout << "-----"                             << std::endl;
-    std::cout << "CPU: "        << cpu               << std::endl;
-    std::cout << "Sender PID: " << event->sender_pid << std::endl;
-    std::cout << "Target PID: " << event->target_pid << std::endl;
-    std::cout << "Signal: "     << event->signal     << std::endl;
+    std::cout << "-----"                             << '\n';
+    std::cout << "CPU: "        << cpu               << '\n';
+    std::cout << "Sender PID: " << event->sender_pid << '\n';
+    std::cout << "Target PID: " << event->target_pid << '\n';
+    std::cout << "Signal: "     << event->signal     << '\n';
 }
 
 template<std::size_t number>
@@ -126,9 +151,12 @@ int main(int argc, char *argv[])
     if ((error = signal_bpf::attach(skeleton.get())) < 0)
         return EXIT_FAILURE;
 
+
+    std::unordered_map<__u64, argument> execve_map;
+    
     event_handler<EVENT_MAX> handler;
-    handler[EVENT_ID(sys_enter_execve_event)] = sys_enter_execve_handler{};
-    handler[EVENT_ID(sys_exit_execve_event)]  = sys_exit_execve_handler{};
+    handler[EVENT_ID(sys_enter_execve_event)] = sys_enter_execve_handler{execve_map};
+    handler[EVENT_ID(sys_exit_execve_event)]  = sys_exit_execve_handler{execve_map};
     handler[EVENT_ID(sys_enter_kill_event)]   = handle_sys_enter_kill;
 
     // perf buffer 選項
