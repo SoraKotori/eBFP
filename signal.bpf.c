@@ -37,17 +37,10 @@ int tracepoint__syscalls__sys_enter_execve(struct trace_event_raw_sys_enter *ctx
     if  (error < 0)
         return 0;
 
-    // __u64 pid_tgid = bpf_get_current_pid_tgid();
-    // __u64 ktime = bpf_ktime_get_ns();
-
-    struct command_event event =
-    {
-        .base.id = ctx->id,
+    INIT_EVENT(event, sys_enter_execve_event,
         .pid_tgid = bpf_get_current_pid_tgid(),
         .ktime = bpf_ktime_get_ns()
-        // .pid     = pid_tgid,       // thread ID
-        // .tgid    = pid_tgid >> 32  // process ID
-    };
+    );
 
     int i = 0;
 
@@ -75,7 +68,7 @@ int tracepoint__syscalls__sys_enter_execve(struct trace_event_raw_sys_enter *ctx
                                       &events,
                                       BPF_F_CURRENT_CPU,
                                       &event,
-                                      offsetof(struct command_event, argv_i) + error); // length
+                                      offsetof(struct sys_enter_execve_event, argv_i) + error); // length
         if (error < 0)
             return 0;
     }
@@ -86,10 +79,30 @@ int tracepoint__syscalls__sys_enter_execve(struct trace_event_raw_sys_enter *ctx
                                   &events,
                                   BPF_F_CURRENT_CPU,
                                   &event,
-                                  offsetof(struct command_event, i) + sizeof(event.i));
+                                  offsetof(struct sys_enter_execve_event, i) + sizeof(event.i));
     if (error < 0)
         return 0;
     
+    return 0;
+}
+
+SEC("tracepoint/syscalls/sys_exit_execve")
+int tracepoint__syscalls__sys_exit_execve(struct trace_event_raw_sys_exit *ctx)
+{
+    INIT_EVENT(event, sys_exit_execve_event,
+        .pid_tgid = bpf_get_current_pid_tgid(),
+        .ktime = bpf_ktime_get_ns(),
+        .ret = ctx->ret
+    );
+
+    long error = bpf_perf_event_output(ctx,
+                                       &events,
+                                       BPF_F_CURRENT_CPU,
+                                       &event,
+                                       sizeof(event));
+    if (error < 0)
+        return 0;
+
     return 0;
 }
 
@@ -101,14 +114,12 @@ int tracepoint__syscalls__sys_enter_kill(struct trace_event_raw_sys_enter *ctx)
 
     __u64 pid_tgid = bpf_get_current_pid_tgid();
 
-    struct signal_event event =
-    {
-        .base.id    = ctx->id,
+    INIT_EVENT(event, sys_enter_kill_event,
         .sender_pid = pid_tgid >> 32,   // process ID
         .sender_tid = pid_tgid,         // thread ID
         .target_pid = ctx->args[0],
         .signal     = ctx->args[1]
-    };
+    );
     
     long error = bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU, &event, sizeof(event));
     if  (error < 0)
@@ -122,7 +133,7 @@ int tracepoint__syscalls__sys_enter_kill(struct trace_event_raw_sys_enter *ctx)
 // {
 //     __u64 pid_tgid = bpf_get_current_pid_tgid();
 
-//     struct signal_event event =
+//     struct sys_enter_kill_event event =
 //     {
 //         .sender_pid = pid_tgid >> 32,
 //         .sender_tid = pid_tgid
@@ -132,8 +143,9 @@ int tracepoint__syscalls__sys_enter_kill(struct trace_event_raw_sys_enter *ctx)
 //     if (BPF_CORE_READ_INTO(&args, ctx, args))
 //         return 0;
 
-//     switch (ctx->id)
+//     switch (ctx->event_id)
 //     {
+//         case __NR_execve:
 //         case __NR_kill:
 //             event.target_pid = args[0];
 //             event.signal     = args[1];

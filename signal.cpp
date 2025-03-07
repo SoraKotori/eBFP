@@ -15,7 +15,7 @@
 //     return pattern[0] == '\0';
 // }
 
-class command_event_handler
+class sys_enter_execve_handler
 {
     struct argument
     {
@@ -28,12 +28,13 @@ class command_event_handler
 public:
     void operator()(int cpu, void *data, __u32 size)
     {
-        auto event = static_cast<command_event*>(data);
+        auto event = static_cast<sys_enter_execve_event*>(data);
 
         auto& arg = map[event->ktime];
-        if (size > offsetof(command_event, argv_i))
+        if (size > offsetof(sys_enter_execve_event, argv_i))
         {
-            arg.argv.emplace_back(event->argv_i, size - offsetof(command_event, argv_i) - 1); // not include '\0'
+            if (std::size(arg.argv) == event->i)
+                arg.argv.emplace_back(event->argv_i, size - offsetof(sys_enter_execve_event, argv_i) - 1); // not include '\0'
         }
         else
         {
@@ -44,9 +45,20 @@ public:
     }
 };
 
-static void handle_signal_event(int cpu, void *data, __u32 size)
+class sys_exit_execve_handler
 {
-    auto event = static_cast<signal_event*>(data);
+public:
+    void operator()(int cpu, void *data, __u32 size)
+    {
+        auto event = static_cast<sys_exit_execve_event*>(data);
+
+        std::cout << event->ret << std::endl;
+    }
+};
+
+static void handle_sys_enter_kill(int cpu, void *data, __u32 size)
+{
+    auto event = static_cast<sys_enter_kill_event*>(data);
 
     std::cout << "-----"                             << std::endl;
     std::cout << "CPU: "        << cpu               << std::endl;
@@ -64,8 +76,8 @@ class event_handler
     {
         auto event = static_cast<event_base*>(data);
 
-        if (handlers_[event->id])
-            handlers_[event->id](cpu, data, size);
+        if (handlers_[event->event_id])
+            handlers_[event->event_id](cpu, data, size);
     }
 
 public:
@@ -114,9 +126,10 @@ int main(int argc, char *argv[])
     if ((error = signal_bpf::attach(skeleton.get())) < 0)
         return EXIT_FAILURE;
 
-    event_handler<__NR_kill + 1> handler;
-    handler[__NR_execve] = command_event_handler{};
-    handler[__NR_kill]   = handle_signal_event;
+    event_handler<EVENT_MAX> handler;
+    handler[EVENT_ID(sys_enter_execve_event)] = sys_enter_execve_handler{};
+    handler[EVENT_ID(sys_exit_execve_event)]  = sys_exit_execve_handler{};
+    handler[EVENT_ID(sys_enter_kill_event)]   = handle_sys_enter_kill;
 
     // perf buffer 選項
     perf_buffer_opts pb_opts{ .sz = sizeof(perf_buffer_opts) };
