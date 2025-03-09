@@ -30,13 +30,27 @@ struct {
 	__uint(value_size, sizeof(int));
 } events SEC(".maps");
 
+#define STR_HELPER(x) #x
+#define STR(x) STR_HELPER(x)
+
+#define PRINT_ERROR(error) \
+    bpf_printk("%s: error: %d, %s", __FILE__ ":" STR(__LINE__), error, __func__)
+
+#define CHECK_ERROR(expr) ({ \
+    long __err = (expr);     \
+    if  (__err < 0)          \
+    {                        \
+        PRINT_ERROR(__err);  \
+        return 0;            \
+    }                        \
+    __err;                   \
+})
+
 SEC("tracepoint/syscalls/sys_enter_execve")
 int tracepoint__syscalls__sys_enter_execve(struct trace_event_raw_sys_enter *ctx)
 {
     const char *const *argv = NULL;
-    long error = BPF_CORE_READ_INTO(&argv, ctx, args[1]);
-    if  (error < 0)
-        return 0;
+    CHECK_ERROR(BPF_CORE_READ_INTO(&argv, ctx, args[1]));
 
     INIT_EVENT(event, sys_enter_execve_event,
         .pid_tgid = bpf_get_current_pid_tgid(),
@@ -51,39 +65,27 @@ int tracepoint__syscalls__sys_enter_execve(struct trace_event_raw_sys_enter *ctx
         const char *argv_i = NULL;
 
         // 從 user space 讀取 argv[i] 中的字串指標
-        error = bpf_core_read_user(&argv_i, sizeof(argv_i), argv + i);
-        if (error < 0)
-            return 0;
+        CHECK_ERROR(bpf_core_read_user(&argv_i, sizeof(argv_i), argv + i));
 
         if (argv_i == NULL)
             break;
 
         // 讀取 user space 中 argv[i] 的字串內容到 event 中
-        error = bpf_core_read_user_str(event.argv_i, sizeof(event.argv_i), argv_i);
-        if (error < 0)
-            return 0;
+        long length = CHECK_ERROR(bpf_core_read_user_str(event.argv_i, sizeof(event.argv_i), argv_i));
 
         event.i = i;
         
-        error = bpf_perf_event_output(ctx,
-                                      &events,
-                                      BPF_F_CURRENT_CPU,
-                                      &event,
-                                      offsetof(struct sys_enter_execve_event, argv_i) + error); // length
-        if (error < 0)
-            return 0;
+        CHECK_ERROR(bpf_perf_event_output(
+            ctx, &events, BPF_F_CURRENT_CPU, &event,
+            offsetof(struct sys_enter_execve_event, argv_i) + length));
     }
 
     event.i = i;
 
-    error = bpf_perf_event_output(ctx,
-                                  &events,
-                                  BPF_F_CURRENT_CPU,
-                                  &event,
-                                  offsetof(struct sys_enter_execve_event, i) + sizeof(event.i));
-    if (error < 0)
-        return 0;
-    
+    CHECK_ERROR(bpf_perf_event_output(
+        ctx, &events, BPF_F_CURRENT_CPU, &event,
+        offsetof(struct sys_enter_execve_event, i) + sizeof(event.i)));
+
     return 0;
 }
 
@@ -96,13 +98,8 @@ int tracepoint__syscalls__sys_exit_execve(struct trace_event_raw_sys_exit *ctx)
         .ret = ctx->ret
     );
 
-    long error = bpf_perf_event_output(ctx,
-                                       &events,
-                                       BPF_F_CURRENT_CPU,
-                                       &event,
-                                       sizeof(event));
-    if (error < 0)
-        return 0;
+    CHECK_ERROR(bpf_perf_event_output(
+        ctx, &events, BPF_F_CURRENT_CPU, &event, sizeof(event)));
 
     return 0;
 }
@@ -113,14 +110,10 @@ int tracepoint__syscalls__sys_enter_kill(struct trace_event_raw_sys_enter *ctx)
     __u64 pid_tgid = bpf_get_current_pid_tgid();
 
     int signal = 0;
-    long error = bpf_core_read(&signal, sizeof(signal), &ctx->args[1]);
-    if  (error < 0)
-        return 0;
+    CHECK_ERROR(bpf_core_read(&signal, sizeof(signal), &ctx->args[1]));
 
-    // update singal 作為 sys_exit_kill 的判斷條件
-    error = bpf_map_update_elem(&kills, &pid_tgid, &signal, BPF_ANY);
-    if (error < 0)
-        return 0;
+    // 更新 singal 作為 sys_exit_kill 的判斷條件
+    CHECK_ERROR(bpf_map_update_elem(&kills, &pid_tgid, &signal, BPF_ANY));
 
     // 檢查 signal 若為 0 則不輸出 event
     if (signal == 0)
@@ -132,9 +125,8 @@ int tracepoint__syscalls__sys_enter_kill(struct trace_event_raw_sys_enter *ctx)
         .signal     = signal
     );
     
-    error = bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU, &event, sizeof(event));
-    if  (error < 0)
-        return 0;
+    CHECK_ERROR(bpf_perf_event_output(
+        ctx, &events, BPF_F_CURRENT_CPU, &event, sizeof(event)));
 
     return 0;
 }
@@ -150,9 +142,7 @@ int tracepoint__syscalls__sys_exit_kill(struct trace_event_raw_sys_exit *ctx)
 
     int signal = *signal_ptr;
 
-    long error  = bpf_map_delete_elem(&kills, &pid_tgid);
-    if  (error < 0)
-        return 0;
+    CHECK_ERROR(bpf_map_delete_elem(&kills, &pid_tgid));
 
     // 檢查 signal 若為 0 則不輸出 event
     if (signal == 0)
@@ -163,9 +153,8 @@ int tracepoint__syscalls__sys_exit_kill(struct trace_event_raw_sys_exit *ctx)
         .ret        = ctx->ret
     );
     
-    error = bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU, &event, sizeof(event));
-    if  (error < 0)
-        return 0;
+    CHECK_ERROR(bpf_perf_event_output(
+        ctx, &events, BPF_F_CURRENT_CPU, &event, sizeof(event)));
 
     return 0;
 }
@@ -207,14 +196,14 @@ int tracepoint__syscalls__sys_exit_kill(struct trace_event_raw_sys_exit *ctx)
 //     return 0;
 // }
 
-SEC("kprobe/__send_signal")
-int BPF_KPROBE(kprobe__send_signal, int sig, struct siginfo *info, struct task_struct *task)
-{
-    pid_t sender_pid = BPF_CORE_READ(info, _sifields._kill._pid);
-    uid_t sender_uid = BPF_CORE_READ(info, _sifields._kill._uid);
-    pid_t target_pid = BPF_CORE_READ(task, pid);
+// SEC("kprobe/__send_signal")
+// int BPF_KPROBE(kprobe__send_signal, int sig, struct siginfo *info, struct task_struct *task)
+// {
+//     pid_t sender_pid = BPF_CORE_READ(info, _sifields._kill._pid);
+//     uid_t sender_uid = BPF_CORE_READ(info, _sifields._kill._uid);
+//     pid_t target_pid = BPF_CORE_READ(task, pid);
 
-    return 0;
-}
+//     return 0;
+// }
 
 char LICENSE[] SEC("license") = "Dual BSD/GPL";

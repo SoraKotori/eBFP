@@ -120,7 +120,7 @@ public:
         auto& arg = map_[event->pid_tgid];
         arg.ret = event->ret;
 
-        std::print("pid: {} tid: {} ret: {:>2} command: ", 
+        std::print("pid: {}, tid: {}, ret: {:>2}, command: ", 
             event->tgid, // pid
             event->pid,  // tid
             arg.ret);    // {:>2} 代表右對齊、最小2格
@@ -174,7 +174,7 @@ public:
 
         arg.ret = event->ret;
 
-        std::println("pid: {} tid: {} ret: {:>2} target pid: {} signal: {}", 
+        std::println("pid: {}, tid: {}, ret: {:>2}, target pid: {}, signal: {}", 
             event->tgid, // pid
             event->pid,  // tid
             arg.ret,     // {:>2} 代表右對齊、最小2格

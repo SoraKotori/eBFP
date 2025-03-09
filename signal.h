@@ -3,7 +3,6 @@
 #define MAX_ARG_LEN 256 // ebpf stack max 512 bytes
 
 #define EVENT_LIST \
-    MAKE_EVENT_ID(event_base) \
     MAKE_EVENT_ID(sys_enter_execve_event) \
     MAKE_EVENT_ID(sys_exit_execve_event) \
     MAKE_EVENT_ID(sys_enter_kill_event) \
@@ -24,7 +23,14 @@ struct event_base
 };
 
 #define INIT_EVENT(name, EVENT_TYPE, ...) \
-    struct EVENT_TYPE name = { .base = { .event_id = EVENT_ID(EVENT_TYPE) }, __VA_ARGS__ }
+struct EVENT_TYPE name =                  \
+{                                         \
+    .base =                               \
+    {                                     \
+        .event_id = EVENT_ID(EVENT_TYPE)  \
+    },                                    \
+    __VA_ARGS__                           \
+}
 
 #define PID_TGID_UNION \
 union                  \
