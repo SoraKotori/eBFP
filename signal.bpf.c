@@ -29,7 +29,7 @@ struct {
     __uint(max_entries, MAX_PID_TGIDS);
     __type(key, __u64);
     __type(value, int);
-} kills SEC(".maps");
+} kill_map SEC(".maps");
 
 struct {
     __uint(type, BPF_MAP_TYPE_PERF_EVENT_ARRAY);
@@ -194,23 +194,18 @@ int tracepoint__syscalls__sys_exit_execve(struct trace_event_raw_sys_exit *ctx)
 SEC("tracepoint/syscalls/sys_enter_kill")
 int tracepoint__syscalls__sys_enter_kill(struct trace_event_raw_sys_enter *ctx)
 {
-    __u64 pid_tgid = bpf_get_current_pid_tgid();
-
-    int signal = 0;
-    CHECK_ERROR(bpf_core_read(&signal, sizeof(signal), &ctx->args[1]));
-
-    // 更新 singal 作為 sys_exit_kill 的判斷條件
-    CHECK_ERROR(bpf_map_update_elem(&kills, &pid_tgid, &signal, BPF_ANY));
+    INIT_EVENT(event, sys_enter_kill_event,
+        .pid_tgid   = bpf_get_current_pid_tgid(),
+        .target_pid = ctx->args[0],
+        .signal     = ctx->args[1]
+    );
 
     // 檢查 signal 若為 0 則不輸出 event
-    if (signal == 0)
+    if (event.signal == 0)
         return 0;
 
-    INIT_EVENT(event, sys_enter_kill_event,
-        .pid_tgid   = pid_tgid,
-        .target_pid = ctx->args[0],
-        .signal     = signal
-    );
+    // 更新 singal 作為 sys_exit_kill 的判斷條件
+    CHECK_ERROR(bpf_map_update_elem(&kill_map, &event.pid_tgid, &event.signal, BPF_ANY));
     
     CHECK_ERROR(bpf_perf_event_output(
         ctx, &events, BPF_F_CURRENT_CPU, &event, sizeof(event)));
@@ -221,24 +216,16 @@ int tracepoint__syscalls__sys_enter_kill(struct trace_event_raw_sys_enter *ctx)
 SEC("tracepoint/syscalls/sys_exit_kill")
 int tracepoint__syscalls__sys_exit_kill(struct trace_event_raw_sys_exit *ctx)
 {
-    __u64 pid_tgid = bpf_get_current_pid_tgid();
+    INIT_EVENT(event, sys_exit_kill_event,
+        .pid_tgid = bpf_get_current_pid_tgid(),
+        .ret      = ctx->ret
+    );
 
-    int* signal_ptr = CHECK_PTR(bpf_map_lookup_elem(&kills, &pid_tgid));
+    int* signal_ptr = bpf_map_lookup_elem(&kill_map, &event.pid_tgid);
     if (!signal_ptr)
         return 0;
 
-    int signal = *signal_ptr;
-
-    CHECK_ERROR(bpf_map_delete_elem(&kills, &pid_tgid));
-
-    // 檢查 signal 若為 0 則不輸出 event
-    if (signal == 0)
-        return 0;
-
-    INIT_EVENT(event, sys_exit_kill_event,
-        .pid_tgid = pid_tgid,
-        .ret      = ctx->ret
-    );
+    CHECK_ERROR(bpf_map_delete_elem(&kill_map, &event.pid_tgid));
     
     CHECK_ERROR(bpf_perf_event_output(
         ctx, &events, BPF_F_CURRENT_CPU, &event, sizeof(event)));
