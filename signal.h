@@ -8,29 +8,19 @@
     MAKE_EVENT_ID(sys_enter_kill_event) \
     MAKE_EVENT_ID(sys_exit_kill_event)
 
+#define EVENT_ID(EVENT_TYPE) EVENT_TYPE##_ID
+
 enum event_ids {
-#define MAKE_EVENT_ID(EVENT_TYPE) EVENT_TYPE##_ID,
+#define MAKE_EVENT_ID(EVENT_TYPE) EVENT_ID(EVENT_TYPE),
     EVENT_LIST
 #undef MAKE_EVENT_ID
     EVENT_MAX
 };
 
-#define EVENT_ID(EVENT_TYPE) EVENT_TYPE##_ID
-
 struct event_base
 {
     enum event_ids event_id;
 };
-
-#define INIT_EVENT(name, EVENT_TYPE, ...) \
-struct EVENT_TYPE name =                  \
-{                                         \
-    .base =                               \
-    {                                     \
-        .event_id = EVENT_ID(EVENT_TYPE)  \
-    },                                    \
-    __VA_ARGS__                           \
-}
 
 #define PID_TGID_UNION \
 union                  \

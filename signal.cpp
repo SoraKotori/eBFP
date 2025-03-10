@@ -12,11 +12,6 @@
 #include "signal.h"
 #include "signal.skel.h"
 
-// bool is_pattern(const char *const command, const char *const pattern)
-// {
-//     return pattern[0] == '\0';
-// }
-
 struct event_awaiter
 {
     bool await_ready() const
