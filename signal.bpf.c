@@ -233,6 +233,23 @@ int tracepoint__syscalls__sys_exit_kill(struct trace_event_raw_sys_exit *ctx)
     return 0;
 }
 
+SEC("tracepoint/sched/sched_process_exit")
+int tracepoint__sched__sched_process_exit(struct trace_event_raw_sched_process_template *ctx)
+{
+    INIT_EVENT(event, sched_process_exit_event,
+        .pid_tgid = bpf_get_current_pid_tgid()
+    );
+
+    struct task_struct *task = (struct task_struct *)CHECK_PTR(bpf_get_current_task());
+
+    CHECK_ERROR(BPF_CORE_READ_INTO(&event.exit_code, task, exit_code));
+
+    CHECK_ERROR(bpf_perf_event_output(
+        ctx, &events, BPF_F_CURRENT_CPU, &event, sizeof(event)));
+
+    return 0;
+}
+
 // SEC("raw_tracepoint/sys_enter")
 // int raw_tracepoint__sys_enter(struct bpf_raw_tracepoint_args *ctx)
 // {

@@ -9,6 +9,8 @@
 
 #include <bpf/libbpf.h>
 
+#include <sys/wait.h>
+
 #include "signal.h"
 #include "signal.skel.h"
 
@@ -178,6 +180,26 @@ public:
     }
 };
 
+void handle_sched_process_exit(int cpu, void *data, __u32 size)
+{
+    auto event = static_cast<sched_process_exit_event*>(data);
+
+    std::print("pid: {}, tid: {}, ", 
+        event->tgid, // pid
+        event->pid); // tid
+
+    // 判斷是否發生 Core Dump
+
+    if (WIFEXITED(event->exit_code))
+        std::println("exited, status: {}", WEXITSTATUS(event->exit_code));
+    else if (WIFSIGNALED(event->exit_code))
+        std::println("killed by signal {},", WTERMSIG(event->exit_code));
+    else if (WIFSTOPPED(event->exit_code))
+        std::println("stopped by signal {}", WSTOPSIG(event->exit_code));
+    else if (WIFCONTINUED(event->exit_code))
+        std::println("continued");
+}
+
 template<std::size_t number>
 class event_handler
 {
@@ -242,11 +264,12 @@ int main(int argc, char *argv[])
     std::unordered_map<__u64, kill_argument> kill_map;
     
     event_handler<EVENT_MAX> handler;
-    handler[EVENT_ID(sys_enter_execve_event)] = sys_enter_execve_handler{execve_map};
-    handler[EVENT_ID(sys_exit_execve_event)]  = sys_exit_execve_handler{execve_map};
-    handler[EVENT_ID(sys_enter_kill_event)]   = sys_enter_kill_handler{kill_map};
-    handler[EVENT_ID(sys_exit_kill_event)]    = sys_exit_kill_handler{kill_map};
-
+    handler[EVENT_ID(sys_enter_execve_event)]   = sys_enter_execve_handler{execve_map};
+    handler[EVENT_ID(sys_exit_execve_event)]    = sys_exit_execve_handler{execve_map};
+    handler[EVENT_ID(sys_enter_kill_event)]     = sys_enter_kill_handler{kill_map};
+    handler[EVENT_ID(sys_exit_kill_event)]      = sys_exit_kill_handler{kill_map};
+    handler[EVENT_ID(sched_process_exit_event)] = handle_sched_process_exit;
+    
     // perf buffer 選項
     perf_buffer_opts pb_opts{ .sz = sizeof(perf_buffer_opts) };
 

@@ -6,7 +6,8 @@
     MAKE_EVENT_ID(sys_enter_execve_event) \
     MAKE_EVENT_ID(sys_exit_execve_event) \
     MAKE_EVENT_ID(sys_enter_kill_event) \
-    MAKE_EVENT_ID(sys_exit_kill_event)
+    MAKE_EVENT_ID(sys_exit_kill_event) \
+    MAKE_EVENT_ID(sched_process_exit_event)
 
 #define EVENT_ID(EVENT_TYPE) EVENT_TYPE##_ID
 
@@ -67,4 +68,12 @@ struct sys_exit_kill_event
 
     PID_TGID_UNION;
     int ret;
+};
+
+struct sched_process_exit_event
+{
+    struct event_base base;
+
+    PID_TGID_UNION;
+    int exit_code;
 };
