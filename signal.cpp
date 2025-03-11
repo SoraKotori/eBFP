@@ -188,16 +188,17 @@ void handle_sched_process_exit(int cpu, void *data, __u32 size)
         event->tgid, // pid
         event->pid); // tid
 
-    // 判斷是否發生 Core Dump
+    auto status = event->exit_code;
+    
+    if (WIFEXITED(status))
+        std::println("exited, status: {}", WEXITSTATUS(status));
 
-    if (WIFEXITED(event->exit_code))
-        std::println("exited, status: {}", WEXITSTATUS(event->exit_code));
-    else if (WIFSIGNALED(event->exit_code))
-        std::println("killed by signal {},", WTERMSIG(event->exit_code));
-    else if (WIFSTOPPED(event->exit_code))
-        std::println("stopped by signal {}", WSTOPSIG(event->exit_code));
-    else if (WIFCONTINUED(event->exit_code))
-        std::println("continued");
+    else if (WIFSIGNALED(status))
+        std::println("killed by signal {} SIG{} ({}){}",
+            WTERMSIG(status),
+            sigabbrev_np(WTERMSIG(status)) ? sigabbrev_np(WTERMSIG(status)) : "NULL",
+            sigdescr_np (WTERMSIG(status)) ? sigdescr_np (WTERMSIG(status)) : "NULL",
+            WCOREDUMP(status) ? ", (core dumped)" : ""); // 判斷是否發生 Core Dump
 }
 
 template<std::size_t number>
