@@ -191,7 +191,7 @@ void handle_sched_process_exit(int cpu, void *data, __u32 size)
     auto status = event->exit_code;
     
     if (WIFEXITED(status))
-        std::println("exited, status: {}", WEXITSTATUS(status));
+        std::println("exited, exit code: {}", WEXITSTATUS(status));
 
     else if (WIFSIGNALED(status))
         std::println("killed by signal {} SIG{} ({}){}",
@@ -200,6 +200,37 @@ void handle_sched_process_exit(int cpu, void *data, __u32 size)
             sigdescr_np (WTERMSIG(status)) ? sigdescr_np (WTERMSIG(status)) : "NULL",
             WCOREDUMP(status) ? ", (core dumped)" : ""); // 判斷是否發生 Core Dump
 }
+
+class do_coredump_handler
+{
+    bpf_map* stack_trace_;
+
+public:
+    do_coredump_handler(bpf_map* stack_trace) :
+        stack_trace_{stack_trace}
+    {}
+
+    void operator()(int cpu, void *data, __u32 size)
+    {
+        auto event = static_cast<do_coredump_event*>(data);
+
+        std::array<__u64, PERF_MAX_STACK_DEPTH> stack;
+        int error = bpf_map__lookup_elem(stack_trace_,
+            &event->stack_id, sizeof(event->stack_id),
+            stack.data(), sizeof(stack), 0);
+
+        if (error < 0)
+            return;
+
+        for (auto [address, i] : std::ranges::enumerate_view(stack))
+        {
+            if (address == 0)
+                break;
+
+            std::println("#{:#018x} in {} ({})", i, address, "???", "???");
+        }
+    }
+};
 
 template<std::size_t number>
 class event_handler
@@ -270,6 +301,7 @@ int main(int argc, char *argv[])
     handler[EVENT_ID(sys_enter_kill_event)]     = sys_enter_kill_handler{kill_map};
     handler[EVENT_ID(sys_exit_kill_event)]      = sys_exit_kill_handler{kill_map};
     handler[EVENT_ID(sched_process_exit_event)] = handle_sched_process_exit;
+    handler[EVENT_ID(do_coredump_event)]        = do_coredump_handler{skeleton->maps.stack_trace};
     
     // perf buffer 選項
     perf_buffer_opts pb_opts{ .sz = sizeof(perf_buffer_opts) };

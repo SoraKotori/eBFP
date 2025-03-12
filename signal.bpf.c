@@ -32,6 +32,13 @@ struct {
 } kill_map SEC(".maps");
 
 struct {
+    __uint(type, BPF_MAP_TYPE_STACK_TRACE);
+    __uint(max_entries, MAX_PID_TGIDS);
+    __type(key, u32);
+    __type(value, u64[PERF_MAX_STACK_DEPTH]);
+} stack_trace SEC(".maps");
+
+struct {
     __uint(type, BPF_MAP_TYPE_PERF_EVENT_ARRAY);
 	__uint(key_size, sizeof(u32));
 	__uint(value_size, sizeof(int));
@@ -77,7 +84,7 @@ struct EVENT_TYPE name =                  \
 })
 
 __always_inline
-int pattern_strcmp(const char *const arg, const char *const pattern)
+int pattern_strcmp(const char *const pattern, const char *const arg)
 {
     if (pattern[0] == '\0')
         return 0;
@@ -106,31 +113,37 @@ int tracepoint__syscalls__sys_enter_execve(struct trace_event_raw_sys_enter *ctx
         .ktime    = bpf_ktime_get_ns()
     );
 
-    // 從 tracepoint context 中取得 argv 指標
-    const char *const *argv = NULL;
-    CHECK_ERROR(BPF_CORE_READ_INTO(&argv, ctx, args[1]));
-    if (!argv)
-        return 0; // argv 為 null 時，可能需要更好的處理 !!!
-
     // 從 map 中取得欲比對的 pattern
     __u32 key = 0;
     char* pattern = CHECK_PTR(bpf_map_lookup_elem(&command_pattern, &key));
-
-    // 從 user space 讀取 argv[0] 中的字串指標
-    const char *argv_i = NULL;
-    CHECK_ERROR(bpf_core_read_user(&argv_i, sizeof(argv_i), argv));
-    if (!argv_i)
-        goto output;
-
-    // 將 argv[0] 字串讀取到 event.argv_i
-    long length = CHECK_ERROR(bpf_core_read_user_str(event.argv_i, sizeof(event.argv_i), argv_i));
-
-    // argv[0] 與 pattern 進行比對，不符合則直接返回
-    if (pattern && pattern_strcmp(event.argv_i, pattern))
+    if  (!pattern)
         return 0;
 
-    int value = 0;
-    CHECK_ERROR(bpf_map_update_elem(&execve_map, &event.pid_tgid, &value, BPF_ANY));
+    // 從 tracepoint context 中取得 argv 指標，並取得 argv[0]
+    const char *const *argv = NULL;
+    const char *argv_i = NULL;
+    CHECK_ERROR(BPF_CORE_READ_INTO(&argv, ctx, args[1]));
+    if (argv) // 若 argv 存在，再嘗試讀取 argv[0]
+        CHECK_ERROR(bpf_core_read_user(&argv_i, sizeof(argv_i), argv));
+
+    // 處理「argv 或 argv_i 不存在」的情況：
+    // - 如果 pattern 不是空字串，就直接 return 0 (表示不符合條件)；
+    // - 如果 pattern 是空字串，則視為匹配，執行輸出流程。
+    if (!argv_i)
+    {
+        if (pattern[0])
+            return 0;
+        else
+            goto output;
+    }
+
+    // 讀取 argv[0] 字串到 event.argv_i
+    long length = CHECK_ERROR(
+        bpf_core_read_user_str(event.argv_i, sizeof(event.argv_i), argv_i));
+
+    // 如果 argv[0] 與 pattern 比對不符，則直接 return
+    if (pattern_strcmp(pattern, event.argv_i))
+        return 0;
 
     // 輸出第一次事件
     CHECK_ERROR(bpf_perf_event_output(
@@ -149,7 +162,8 @@ int tracepoint__syscalls__sys_enter_execve(struct trace_event_raw_sys_enter *ctx
             break;
 
         // 將 argv[i] 中的字串讀取到 event.argv_i
-        length = CHECK_ERROR(bpf_core_read_user_str(event.argv_i, sizeof(event.argv_i), argv_i));
+        length = CHECK_ERROR(
+            bpf_core_read_user_str(event.argv_i, sizeof(event.argv_i), argv_i));
         
         // 將目前參數編號存入 event.i，並輸出事件
         event.i++;
@@ -166,6 +180,9 @@ output:
         ctx, &events, BPF_F_CURRENT_CPU, &event,
         offsetof(struct sys_enter_execve_event, i) + sizeof(event.i)));
 
+    int value = 0;
+    CHECK_ERROR(bpf_map_update_elem(&execve_map, &event.pid_tgid, &value, BPF_ANY));
+    
     return 0;
 }
 
@@ -243,6 +260,25 @@ int tracepoint__sched__sched_process_exit(struct trace_event_raw_sched_process_t
     struct task_struct *task = (struct task_struct *)CHECK_PTR(bpf_get_current_task());
 
     CHECK_ERROR(BPF_CORE_READ_INTO(&event.exit_code, task, exit_code));
+
+    CHECK_ERROR(bpf_perf_event_output(
+        ctx, &events, BPF_F_CURRENT_CPU, &event, sizeof(event)));
+
+    return 0;
+}
+
+SEC("kprobe/do_coredump")
+int BPF_KPROBE(kprobe__do_coredump, const kernel_siginfo_t *siginfo)
+{
+    INIT_EVENT(event, do_coredump_event,
+        .pid_tgid = bpf_get_current_pid_tgid(),
+
+        // 取得 user-space stack
+        .stack_id = CHECK_ERROR(bpf_get_stackid(ctx, &stack_trace, BPF_F_USER_STACK))
+    );
+
+    CHECK_ERROR(BPF_CORE_READ_INTO(&event.si_signo, siginfo, si_signo));
+    CHECK_ERROR(BPF_CORE_READ_INTO(&event.si_code,  siginfo, si_code));
 
     CHECK_ERROR(bpf_perf_event_output(
         ctx, &events, BPF_F_CURRENT_CPU, &event, sizeof(event)));

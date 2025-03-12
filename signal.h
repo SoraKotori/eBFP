@@ -2,12 +2,17 @@
 
 #define MAX_ARG_LEN 256 // ebpf stack max 512 bytes
 
+#ifndef PERF_MAX_STACK_DEPTH
+#define PERF_MAX_STACK_DEPTH 127
+#endif
+
 #define EVENT_LIST \
     MAKE_EVENT_ID(sys_enter_execve_event) \
     MAKE_EVENT_ID(sys_exit_execve_event) \
     MAKE_EVENT_ID(sys_enter_kill_event) \
     MAKE_EVENT_ID(sys_exit_kill_event) \
-    MAKE_EVENT_ID(sched_process_exit_event)
+    MAKE_EVENT_ID(sched_process_exit_event) \
+    MAKE_EVENT_ID(do_coredump_event)
 
 #define EVENT_ID(EVENT_TYPE) EVENT_TYPE##_ID
 
@@ -76,4 +81,14 @@ struct sched_process_exit_event
 
     PID_TGID_UNION;
     int exit_code;
+};
+
+struct do_coredump_event
+{
+    struct event_base base;
+
+    PID_TGID_UNION;
+    int si_signo;
+    int si_code;
+    long stack_id;
 };
