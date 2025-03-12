@@ -90,5 +90,5 @@ struct do_coredump_event
     PID_TGID_UNION;
     int si_signo;
     int si_code;
-    long stack_id;
+    __u32 stack_id;
 };

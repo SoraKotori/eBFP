@@ -234,12 +234,12 @@ public:
         if (error < 0)
             return;
 
-        for (auto [address, i] : std::ranges::enumerate_view(stack))
+        for (auto [i, address] : std::ranges::enumerate_view(stack))
         {
             if (address == 0)
                 break;
 
-            std::println("#{:#018x} in {} ({})", i, address, "???", "???");
+            std::println("#{} {:#018x} in {} ({})", i, address, "???", "???");
         }
     }
 };

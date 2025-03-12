@@ -270,11 +270,12 @@ int tracepoint__sched__sched_process_exit(struct trace_event_raw_sched_process_t
 SEC("kprobe/do_coredump")
 int BPF_KPROBE(kprobe__do_coredump, const kernel_siginfo_t *siginfo)
 {
+    // 取得 user-space stack
+    long stack_id = CHECK_ERROR(bpf_get_stackid(ctx, &stack_trace, BPF_F_USER_STACK));
+
     INIT_EVENT(event, do_coredump_event,
         .pid_tgid = bpf_get_current_pid_tgid(),
-
-        // 取得 user-space stack
-        .stack_id = CHECK_ERROR(bpf_get_stackid(ctx, &stack_trace, BPF_F_USER_STACK))
+        .stack_id = stack_id
     );
 
     CHECK_ERROR(BPF_CORE_READ_INTO(&event.si_signo, siginfo, si_signo));
