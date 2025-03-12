@@ -1,3 +1,5 @@
+#include <csignal>
+
 #include <iostream>
 #include <memory>
 #include <unordered_map>
@@ -13,6 +15,16 @@
 
 #include "signal.h"
 #include "signal.skel.h"
+
+namespace
+{
+    volatile std::sig_atomic_t g_signal_status;
+}
+
+void signal_handler(int signal)
+{
+    g_signal_status = signal;
+}
 
 struct event_awaiter
 {
@@ -272,6 +284,9 @@ public:
 
 int main(int argc, char *argv[])
 {
+    if (SIG_ERR == std::signal(SIGINT,  signal_handler)) return EXIT_FAILURE;
+    if (SIG_ERR == std::signal(SIGTERM, signal_handler)) return EXIT_FAILURE;
+
     // open and load eBPF skeleton
     auto skeleton = std::unique_ptr<signal_bpf, decltype(&signal_bpf::destroy)>{
                              signal_bpf::open_and_load(), signal_bpf::destroy};
@@ -327,7 +342,7 @@ int main(int argc, char *argv[])
     printf("Successfully started! Ctrl+C to stop.\n");
 
     // 進入 poll loop
-    while (true)
+    while (!g_signal_status)
     {
         int error = perf_buffer__poll(perf_buffer_ptr.get(), 100 /* ms */);
         if (error < 0 && error != -EINTR)
