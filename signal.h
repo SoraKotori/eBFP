@@ -82,8 +82,8 @@ struct sys_enter_read_event
     struct event_base base;
 
     PID_TGID_UNION;
-    int index;
-    int size;
+    __u32 index;
+    __u32 size;
     char buf[MAX_ARG_LEN];
 };
 
@@ -94,6 +94,7 @@ struct sys_exit_read_event
     PID_TGID_UNION;
     int ret;
     __u32 stack_id;
+    char name[MAX_ARG_LEN];
 };
 
 struct sched_process_exit_event

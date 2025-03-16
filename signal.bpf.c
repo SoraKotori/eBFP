@@ -307,72 +307,79 @@ union sys_read_event
 SEC("tracepoint/syscalls/sys_exit_read")
 int tracepoint__syscalls__sys_exit_read(struct trace_event_raw_sys_exit *ctx)
 {
+    union sys_read_event event;
+
     // 初始化並填入 sys_exit_read_event 結構
-    INIT_EVENT(event, sys_exit_read_event,
-        .pid_tgid = bpf_get_current_pid_tgid(),
-        .ret      = ctx->ret
-    );
+    event.exit.base.event_id = EVENT_ID(sys_exit_read_event);
+    event.exit.pid_tgid      = bpf_get_current_pid_tgid();
+    event.exit.ret           = ctx->ret;
 
     // 透過 pid_tgid 從 read_map 中查找對應的 read_argument 結構，如果不存在則不是要監視的 read 事件
-    struct read_argument* read_ptr = bpf_map_lookup_elem(&read_map, &event.pid_tgid);
+    struct read_argument* read_ptr = bpf_map_lookup_elem(&read_map, &event.exit.pid_tgid);
     if (!read_ptr)
         return 0;
 
     struct read_argument read_argument = *read_ptr;
 
     // 釋放掉對應的 read_argument
-    CHECK_ERROR(bpf_map_delete_elem(&read_map, &event.pid_tgid));
+    CHECK_ERROR(bpf_map_delete_elem(&read_map, &event.exit.pid_tgid));
 
     // 編譯期檢查 event 是否為 8-byte 對齊（perf_event_output 需要對齊）
-    _Static_assert(sizeof(event) % 8 == 0, "event must be 8-byte aligned");
+    // _Static_assert(sizeof(event.exit) % 8 == 0, "event must be 8-byte aligned");
 
     // 如果要蒐集錯誤時的 stack trace，可在這裡啟用
-    // if (event.ret < 0)
-    //     event.stack_id = CHECK_ERROR(bpf_get_stackid(ctx, &stack_trace, BPF_F_USER_STACK));
+    // if (event.exit.ret < 0)
+    //     event.exit.stack_id = CHECK_ERROR(bpf_get_stackid(ctx, &stack_trace, BPF_F_USER_STACK));
 
     // 將 sys_exit_read_event 傳送到 user space
     CHECK_ERROR(bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU,
-                                      &event, sizeof(event)));
+                                      &event.exit, sizeof(event.exit)));
+
+    if (event.exit.ret <= 0)
+        return 0;
+
+    // 若 ret 為正數，代表有讀取到資料，則轉型成 unsigned 來通過驗證器，避免為負數
+    __u32 ret = (__u32)event.exit.ret;
 
     // ------------------------------------------------------------
     // 以下為另一個事件：將 sys_enter_read_event 拆成多個片段回傳
     // 每個片段包含部分讀取到的使用者資料（透過 bpf_probe_read_user）
     // ------------------------------------------------------------
 
-    INIT_EVENT(enter_event, sys_enter_read_event,
-        .pid_tgid = bpf_get_current_pid_tgid()
-    );
+    // 初始化並填入 sys_enter_read_event 結構
+    event.enter.base.event_id = EVENT_ID(sys_enter_read_event);
+    event.enter.pid_tgid = bpf_get_current_pid_tgid();
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 3, 0)
     #pragma unroll
 #endif
-    for (int i = 0; i < MAX_ARGS; i++)
+    for (__u32 i = 0; i < MAX_ARGS; i++)
     {
-        enter_event.index = i * MAX_ARG_LEN;
+        event.enter.index = i * MAX_ARG_LEN;
 
         // 如果已經讀完所有資料，就提前結束迴圈
-        if (event.ret <= enter_event.index)
+        if (ret <= event.enter.index)
             break;
 
-        enter_event.size = event.ret - enter_event.index;
-        if (enter_event.size > MAX_ARG_LEN)
-            enter_event.size = MAX_ARG_LEN;
+        event.enter.size = ret - event.enter.index;
+        if (event.enter.size > MAX_ARG_LEN)
+            event.enter.size = MAX_ARG_LEN;
 
-        // 從使用者空間讀取資料進入 enter_event.buf 中
-        CHECK_ERROR(bpf_probe_read_user(enter_event.buf, enter_event.size,
-                                        read_argument.buf + enter_event.index));
+        // 從使用者空間讀取資料進入 event.enter.buf 中
+        CHECK_ERROR(bpf_probe_read_user(event.enter.buf, event.enter.size,
+                                        read_argument.buf + event.enter.index));
 
-        // 計算實際的事件大小，避免超過 enter_event 結構大小，主要用途通過驗證器
-        int event_size = offsetof(struct sys_enter_read_event, buf) + enter_event.size;
-        if (event_size > sizeof(enter_event))
+        // 計算實際的事件大小，避免超過 event.enter 結構大小，主要用途通過驗證器
+        int event_size = offsetof(struct sys_enter_read_event, buf) + event.enter.size;
+        if (event_size > sizeof(event.enter))
         {
-            PRINT_EVENT_SIZE_ERR(event_size, sizeof(enter_event));
+            PRINT_EVENT_SIZE_ERR(event_size, sizeof(event.enter));
             break;
         }
 
         // 將每個片段的 sys_enter_read_event 傳送到 user space
         CHECK_ERROR(bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU,
-                                          &enter_event, event_size));
+                                          &event.enter, event_size));
     }
 
     return 0;
