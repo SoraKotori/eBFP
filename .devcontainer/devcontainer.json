@@ -13,6 +13,11 @@
             "source": "/sys/kernel/debug",
             "target": "/sys/kernel/debug",
             "type": "bind"
+        },
+        {   // bpftool btf dump file /sys/kernel/btf/vmlinux format c > vmlinux.h
+            "source": "/sys/kernel/btf",
+            "target": "/sys/kernel/btf",
+            "type": "bind"
         }
     ],
     "customizations": {

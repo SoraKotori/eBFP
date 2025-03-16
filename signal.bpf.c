@@ -18,18 +18,31 @@ struct {
 } command_pattern SEC(".maps");
 
 struct {
-    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, MAX_PID_TGIDS);
     __type(key, __u64);
     __type(value, int);
 } execve_map SEC(".maps");
 
 struct {
-    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, MAX_PID_TGIDS);
     __type(key, __u64);
     __type(value, int);
 } kill_map SEC(".maps");
+
+struct read_argument
+{
+    void* buf;
+    size_t count;
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, MAX_PID_TGIDS);
+    __type(key, __u64);
+    __type(value, struct read_argument);
+} read_map SEC(".maps");
 
 struct {
     __uint(type, BPF_MAP_TYPE_STACK_TRACE);
@@ -83,9 +96,13 @@ struct EVENT_TYPE name =                  \
     __ptr;                       \
 })
 
+#define PRINT_EVENT_SIZE_ERR(event_size, max_size) \
+    bpf_printk(__FILE__ ":" STR(__LINE__) " event_size overflow: %d > %d\n", event_size, max_size)
+
 __always_inline
 int pattern_strcmp(const char *const pattern, const char *const arg)
 {
+    // 如果 pattern 為空字串，則視為匹配
     if (pattern[0] == '\0')
         return 0;
 
@@ -137,6 +154,8 @@ int tracepoint__syscalls__sys_enter_execve(struct trace_event_raw_sys_enter *ctx
             goto output;
     }
 
+    _Static_assert(sizeof(event.argv_i), "argv_i must have non-zero size for bpf_core_read_user_str()");
+
     // 讀取 argv[0] 字串到 event.argv_i
     long length = CHECK_ERROR(
         bpf_core_read_user_str(event.argv_i, sizeof(event.argv_i), argv_i));
@@ -144,6 +163,12 @@ int tracepoint__syscalls__sys_enter_execve(struct trace_event_raw_sys_enter *ctx
     // 如果 argv[0] 與 pattern 比對不符，則直接 return
     if (pattern_strcmp(pattern, event.argv_i))
         return 0;
+
+    // argv_i 必須是 8-byte 對齊，因為 perf_event_output 傳輸的資料大小會自動補齊為 8 的倍數。
+    // user space 是透過 buffer size 是否超過 argv_i 的 offset 來判斷是否有資料寫入 argv_i，
+    // 所以這個 offset 本身必須剛好對齊，否則會造成判斷錯誤或資料錯位。
+    _Static_assert(offsetof(struct sys_enter_execve_event, argv_i) % 8 == 0,
+        "argv_i must be 8-byte aligned for perf_event_output()");
 
     // 輸出第一次事件
     CHECK_ERROR(bpf_perf_event_output(
@@ -191,16 +216,17 @@ int tracepoint__syscalls__sys_exit_execve(struct trace_event_raw_sys_exit *ctx)
 {
     INIT_EVENT(event, sys_exit_execve_event,
         .pid_tgid = bpf_get_current_pid_tgid(),
+        .ret      = ctx->ret
     );
 
-    int* value_ptr = bpf_map_lookup_elem(&execve_map, &event.pid_tgid);
-    if (!value_ptr)
+    int* execve_ptr = bpf_map_lookup_elem(&execve_map, &event.pid_tgid);
+    if (!execve_ptr)
         return 0;
 
-    CHECK_ERROR(bpf_map_delete_elem(&execve_map, &event.pid_tgid));
+    if (event.ret < 0)
+        CHECK_ERROR(bpf_map_delete_elem(&execve_map, &event.pid_tgid));
 
     event.ktime = bpf_ktime_get_ns();
-    event.ret   = ctx->ret;
 
     CHECK_ERROR(bpf_perf_event_output(
         ctx, &events, BPF_F_CURRENT_CPU, &event, sizeof(event)));
@@ -250,6 +276,102 @@ int tracepoint__syscalls__sys_exit_kill(struct trace_event_raw_sys_exit *ctx)
     return 0;
 }
 
+SEC("tracepoint/syscalls/sys_enter_read")
+int tracepoint__syscalls__sys_enter_read(struct trace_event_raw_sys_enter *ctx)
+{
+    INIT_EVENT(event, sys_enter_read_event,
+        .pid_tgid = bpf_get_current_pid_tgid()
+    );
+
+    int* execve_ptr = bpf_map_lookup_elem(&execve_map, &event.pid_tgid);
+    if (!execve_ptr)
+        return 0;
+
+    struct read_argument argument =
+    {
+        .buf   = (void*)ctx->args[1],
+        .count = ctx->args[2]
+    };
+
+    CHECK_ERROR(bpf_map_update_elem(&read_map, &event.pid_tgid, &argument, BPF_ANY));
+    
+    return 0;
+}
+
+SEC("tracepoint/syscalls/sys_exit_read")
+int tracepoint__syscalls__sys_exit_read(struct trace_event_raw_sys_exit *ctx)
+{
+    // 初始化並填入 sys_exit_read_event 結構
+    INIT_EVENT(event, sys_exit_read_event,
+        .pid_tgid = bpf_get_current_pid_tgid(),
+        .ret      = ctx->ret
+    );
+
+    // 透過 pid_tgid 從 read_map 中查找對應的 read_argument 結構，如果不存在則不是要監視的 read 事件
+    struct read_argument* read_ptr = bpf_map_lookup_elem(&read_map, &event.pid_tgid);
+    if (!read_ptr)
+        return 0;
+
+    struct read_argument read_argument = *read_ptr;
+
+    // 釋放掉對應的 read_argument
+    CHECK_ERROR(bpf_map_delete_elem(&read_map, &event.pid_tgid));
+
+    // 編譯期檢查 event 是否為 8-byte 對齊（perf_event_output 需要對齊）
+    _Static_assert(sizeof(event) % 8 == 0, "event must be 8-byte aligned");
+
+    // 如果要蒐集錯誤時的 stack trace，可在這裡啟用
+    // if (event.ret < 0)
+    //     event.stack_id = CHECK_ERROR(bpf_get_stackid(ctx, &stack_trace, BPF_F_USER_STACK));
+
+    // 將 sys_exit_read_event 傳送到 user space
+    CHECK_ERROR(bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU,
+                                      &event, sizeof(event)));
+
+    // ------------------------------------------------------------
+    // 以下為另一個事件：將 sys_enter_read_event 拆成多個片段回傳
+    // 每個片段包含部分讀取到的使用者資料（透過 bpf_probe_read_user）
+    // ------------------------------------------------------------
+
+    INIT_EVENT(enter_event, sys_enter_read_event,
+        .pid_tgid = bpf_get_current_pid_tgid()
+    );
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 3, 0)
+    #pragma unroll
+#endif
+    for (int i = 0; i < MAX_ARGS; i++)
+    {
+        enter_event.index = i * MAX_ARG_LEN;
+
+        // 如果已經讀完所有資料，就提前結束迴圈
+        if (event.ret <= enter_event.index)
+            break;
+
+        enter_event.size = event.ret - enter_event.index;
+        if (enter_event.size > MAX_ARG_LEN)
+            enter_event.size = MAX_ARG_LEN;
+
+        // 從使用者空間讀取資料進入 enter_event.buf 中
+        CHECK_ERROR(bpf_probe_read_user(enter_event.buf, enter_event.size,
+                                        read_argument.buf + enter_event.index));
+
+        // 計算實際的事件大小，避免超過 enter_event 結構大小，主要用途通過驗證器
+        int event_size = offsetof(struct sys_enter_read_event, buf) + enter_event.size;
+        if (event_size > sizeof(enter_event))
+        {
+            PRINT_EVENT_SIZE_ERR(event_size, sizeof(enter_event));
+            break;
+        }
+
+        // 將每個片段的 sys_enter_read_event 傳送到 user space
+        CHECK_ERROR(bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU,
+                                          &enter_event, event_size));
+    }
+
+    return 0;
+}
+
 SEC("tracepoint/sched/sched_process_exit")
 int tracepoint__sched__sched_process_exit(struct trace_event_raw_sched_process_template *ctx)
 {
@@ -257,6 +379,8 @@ int tracepoint__sched__sched_process_exit(struct trace_event_raw_sched_process_t
         .pid_tgid = bpf_get_current_pid_tgid()
     );
 
+    bpf_map_delete_elem(&execve_map, &event.pid_tgid);
+    
     struct task_struct *task = (struct task_struct *)CHECK_PTR(bpf_get_current_task());
 
     CHECK_ERROR(BPF_CORE_READ_INTO(&event.exit_code, task, exit_code));
@@ -277,6 +401,10 @@ int BPF_KPROBE(kprobe__do_coredump, const kernel_siginfo_t *siginfo)
         .pid_tgid = bpf_get_current_pid_tgid(),
         .stack_id = stack_id
     );
+
+    // struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+    // struct mm_struct *mm = BPF_CORE_READ(task, mm);
+    // struct vm_area_struct *vma = BPF_CORE_READ(mm, mmap);
 
     CHECK_ERROR(BPF_CORE_READ_INTO(&event.si_signo, siginfo, si_signo));
     CHECK_ERROR(BPF_CORE_READ_INTO(&event.si_code,  siginfo, si_code));

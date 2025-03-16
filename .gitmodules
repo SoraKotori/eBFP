@@ -4,3 +4,6 @@
 [submodule "libbpf"]
 	path = libbpf
 	url = https://github.com/libbpf/libbpf
+[submodule "blazesym"]
+	path = blazesym
+	url = https://github.com/libbpf/blazesym.git

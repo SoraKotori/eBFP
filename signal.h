@@ -11,6 +11,8 @@
     MAKE_EVENT_ID(sys_exit_execve_event) \
     MAKE_EVENT_ID(sys_enter_kill_event) \
     MAKE_EVENT_ID(sys_exit_kill_event) \
+    MAKE_EVENT_ID(sys_enter_read_event) \
+    MAKE_EVENT_ID(sys_exit_read_event) \
     MAKE_EVENT_ID(sched_process_exit_event) \
     MAKE_EVENT_ID(do_coredump_event)
 
@@ -46,7 +48,7 @@ struct sys_enter_execve_event
     PID_TGID_UNION;
     __u64 ktime;
     int i;
-    char argv_i[MAX_ARG_LEN];
+    char argv_i[MAX_ARG_LEN] __attribute__((aligned(8)));
 };
 
 struct sys_exit_execve_event
@@ -73,6 +75,25 @@ struct sys_exit_kill_event
 
     PID_TGID_UNION;
     int ret;
+};
+
+struct sys_enter_read_event
+{
+    struct event_base base;
+
+    PID_TGID_UNION;
+    int index;
+    int size;
+    char buf[MAX_ARG_LEN];
+};
+
+struct sys_exit_read_event
+{
+    struct event_base base;
+
+    PID_TGID_UNION;
+    int ret;
+    __u32 stack_id;
 };
 
 struct sched_process_exit_event
