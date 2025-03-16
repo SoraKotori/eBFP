@@ -33,6 +33,7 @@ struct {
 
 struct read_argument
 {
+    int fd;
     void* buf;
     size_t count;
 };
@@ -279,24 +280,29 @@ int tracepoint__syscalls__sys_exit_kill(struct trace_event_raw_sys_exit *ctx)
 SEC("tracepoint/syscalls/sys_enter_read")
 int tracepoint__syscalls__sys_enter_read(struct trace_event_raw_sys_enter *ctx)
 {
-    INIT_EVENT(event, sys_enter_read_event,
-        .pid_tgid = bpf_get_current_pid_tgid()
-    );
+    __u64 pid_tgid = bpf_get_current_pid_tgid();
 
-    int* execve_ptr = bpf_map_lookup_elem(&execve_map, &event.pid_tgid);
+    int* execve_ptr = bpf_map_lookup_elem(&execve_map, &pid_tgid);
     if (!execve_ptr)
         return 0;
 
     struct read_argument argument =
     {
+        .fd    = ctx->args[0],
         .buf   = (void*)ctx->args[1],
         .count = ctx->args[2]
     };
 
-    CHECK_ERROR(bpf_map_update_elem(&read_map, &event.pid_tgid, &argument, BPF_ANY));
+    CHECK_ERROR(bpf_map_update_elem(&read_map, &pid_tgid, &argument, BPF_ANY));
     
     return 0;
 }
+
+union sys_read_event
+{
+    struct sys_enter_read_event enter;
+    struct sys_exit_read_event exit;
+};
 
 SEC("tracepoint/syscalls/sys_exit_read")
 int tracepoint__syscalls__sys_exit_read(struct trace_event_raw_sys_exit *ctx)
