@@ -47,8 +47,9 @@ struct sys_enter_execve_event
 
     PID_TGID_UNION;
     __u64 ktime;
-    int i;
-    char argv_i[MAX_ARG_LEN] __attribute__((aligned(8)));
+    __u32 i;
+    __u32 argv_i_size;
+    char  argv_i[MAX_ARG_LEN];
 };
 
 struct sys_exit_execve_event

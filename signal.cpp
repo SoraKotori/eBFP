@@ -135,7 +135,7 @@ public:
 
         auto& arg = map_[event->pid_tgid];
 
-        if (size > offsetof(sys_enter_execve_event, argv_i))
+        if (event->argv_i_size)
         {
             if (event->i == 0)
             {
@@ -145,7 +145,7 @@ public:
             }
 
             if (event->i == std::size(arg.argv))
-                arg.argv.emplace_back(event->argv_i, static_cast<char*>(data) + size - 1); // not include '\0'
+                arg.argv.emplace_back(event->argv_i, event->argv_i_size - 1); // not include '\0'
         }
         else
             arg.argc = event->i;
@@ -318,8 +318,8 @@ void handle_sched_process_exit(int cpu, void *data, __u32 size)
     else if (WIFSIGNALED(status))
         std::println("killed by signal {} SIG{} ({}){}",
             WTERMSIG(status),
-            sigabbrev_np(WTERMSIG(status)) ? sigabbrev_np(WTERMSIG(status)) : "NULL",
-            sigdescr_np (WTERMSIG(status)) ? sigdescr_np (WTERMSIG(status)) : "NULL",
+            sigabbrev_np(WTERMSIG(status)) ? sigabbrev_np(WTERMSIG(status)) : "null",
+            sigdescr_np (WTERMSIG(status)) ? sigdescr_np (WTERMSIG(status)) : "null",
             WCOREDUMP(status) ? ", (core dumped)" : ""); // 判斷是否發生 Core Dump
 }
 
@@ -406,7 +406,7 @@ int main(int argc, char *argv[])
 
     int error = 0;
 
-    bool disable_read = false;
+    bool disable_read = true;
     
     if (disable_read)
     {

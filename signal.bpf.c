@@ -158,53 +158,48 @@ int tracepoint__syscalls__sys_enter_execve(struct trace_event_raw_sys_enter *ctx
     _Static_assert(sizeof(event.argv_i), "argv_i must have non-zero size for bpf_core_read_user_str()");
 
     // 讀取 argv[0] 字串到 event.argv_i
-    long length = CHECK_ERROR(
+    event.argv_i_size = CHECK_ERROR(
         bpf_core_read_user_str(event.argv_i, sizeof(event.argv_i), argv_i));
 
     // 如果 argv[0] 與 pattern 比對不符，則直接 return
     if (pattern_strcmp(pattern, event.argv_i))
         return 0;
 
-    // argv_i 必須是 8-byte 對齊，因為 perf_event_output 傳輸的資料大小會自動補齊為 8 的倍數。
-    // user space 是透過 buffer size 是否超過 argv_i 的 offset 來判斷是否有資料寫入 argv_i，
-    // 所以這個 offset 本身必須剛好對齊，否則會造成判斷錯誤或資料錯位。
-    _Static_assert(offsetof(struct sys_enter_execve_event, argv_i) % 8 == 0,
-        "argv_i must be 8-byte aligned for perf_event_output()");
-
     // 輸出第一次事件
     CHECK_ERROR(bpf_perf_event_output(
         ctx, &events, BPF_F_CURRENT_CPU, &event,
-        offsetof(struct sys_enter_execve_event, argv_i) + length));
+        offsetof(struct sys_enter_execve_event, argv_i) + event.argv_i_size));
+    event.i++;
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 3, 0)
     #pragma unroll
 #endif
     // 逐一讀取參數，最多讀到 MAX_ARGS 為止
-    for (int i = 1; i < MAX_ARGS; i++)
+    for (int i = 1; i < MAX_ARGS; i++) 
     {
         // 從 user space 讀取 argv[i] 中的字串指標
-        CHECK_ERROR(bpf_core_read_user(&argv_i, sizeof(argv_i), argv + i));
+        CHECK_ERROR(bpf_probe_read_user(&argv_i, sizeof(argv_i), argv + event.i));
         if (!argv_i)
             break;
 
         // 將 argv[i] 中的字串讀取到 event.argv_i
-        length = CHECK_ERROR(
+        event.argv_i_size = CHECK_ERROR(
             bpf_core_read_user_str(event.argv_i, sizeof(event.argv_i), argv_i));
         
         // 將目前參數編號存入 event.i，並輸出事件
-        event.i++;
         CHECK_ERROR(bpf_perf_event_output(
             ctx, &events, BPF_F_CURRENT_CPU, &event,
-            offsetof(struct sys_enter_execve_event, argv_i) + length));
+            offsetof(struct sys_enter_execve_event, argv_i) + event.argv_i_size));
+        event.i++;
     }
 
 output:
 
     // 輸出最後一次事件，只包含參數總數(argc)
-    event.i++;
+    event.argv_i_size = 0;
     CHECK_ERROR(bpf_perf_event_output(
         ctx, &events, BPF_F_CURRENT_CPU, &event,
-        offsetof(struct sys_enter_execve_event, i) + sizeof(event.i)));
+        offsetof(struct sys_enter_execve_event, argv_i_size) + sizeof(event.argv_i_size)));
 
     int value = 0;
     CHECK_ERROR(bpf_map_update_elem(&execve_map, &event.pid_tgid, &value, BPF_ANY));
@@ -298,16 +293,14 @@ int tracepoint__syscalls__sys_enter_read(struct trace_event_raw_sys_enter *ctx)
     return 0;
 }
 
-union sys_read_event
-{
-    struct sys_enter_read_event enter;
-    struct sys_exit_read_event exit;
-};
-
 SEC("tracepoint/syscalls/sys_exit_read")
 int tracepoint__syscalls__sys_exit_read(struct trace_event_raw_sys_exit *ctx)
 {
-    union sys_read_event event;
+    union
+    {
+        struct sys_enter_read_event enter;
+        struct sys_exit_read_event exit;
+    } event;
 
     // 初始化並填入 sys_exit_read_event 結構
     event.exit.base.event_id = EVENT_ID(sys_exit_read_event);
