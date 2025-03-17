@@ -94,7 +94,7 @@ struct sys_exit_read_event
 
     PID_TGID_UNION;
     int ret;
-    __u32 stack_id;
+    __u32 size;
     char name[MAX_ARG_LEN];
 };
 

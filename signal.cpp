@@ -8,6 +8,7 @@
 #include <ranges>
 #include <print>
 #include <coroutine>
+#include <algorithm>
 
 #include <sys/wait.h>
 
@@ -165,7 +166,7 @@ public:
     {
         auto event = static_cast<sys_exit_execve_event*>(data);
 
-        std::print("pid: {}, tid: {}, execve, ret: {:>2}, command: ", 
+        std::print("pid: {:>6}, tid: {:>6}, execve, ret: {:>5}, command: ", 
             event->tgid, // pid
             event->pid,  // tid
             event->ret); // {:>2} 代表右對齊、最小2格
@@ -174,7 +175,7 @@ public:
         arg.ret = event->ret;
 
         std::ranges::copy(arg.argv, std::ostream_iterator<decltype(arg.argv)::value_type>{std::cout, " "});
-        std::cout << '\n';
+        std::println();
     }
 };
 
@@ -220,7 +221,7 @@ public:
         auto event = static_cast<sys_exit_kill_event*>(data);
         auto& arg = map_[event->pid_tgid];
 
-        std::println("pid: {}, tid: {}, kill, ret: {:>2}, target pid: {}, signal: {}", 
+        std::println("pid: {:>6}, tid: {:>6},   kill, ret: {:>5}, target pid: {}, signal: {}", 
             event->tgid, // pid
             event->pid,  // tid
             event->ret,  // {:>2} 代表右對齊、最小2格
@@ -235,10 +236,10 @@ using read_argument = std::vector<char>;
 
 class sys_enter_read_handler
 {
-    std::unordered_map<__u64, std::vector<char>>& map_;
+    std::unordered_map<__u64, read_argument>& map_;
 
 public:
-    sys_enter_read_handler(std::unordered_map<__u64, std::vector<char>>& map) :
+    sys_enter_read_handler(decltype(map_) map) :
         map_{map}
     {}
 
@@ -246,14 +247,22 @@ public:
     {
         auto event = static_cast<sys_enter_read_event*>(data);
 
-        auto& buffer = map_[event->pid_tgid];
+        auto& content = map_[event->pid_tgid];
 
-        auto result = std::begin(buffer) + event->index;
-        result = std::copy_n(event->buf, event->size, result);
+        auto result  = std::copy_n(event->buf, event->size, std::begin(content) + event->index);
+        if  (result != std::end(content))
+            return;
 
-        if (result == end(buffer))
+        constexpr std::array<char, 4> elf_magic{ 0x7F, 'E', 'L', 'F' };
+
+        auto pair = std::ranges::mismatch(content, elf_magic);
+        if  (pair.in2 == std::end(elf_magic))
         {
-            std::copy(std::begin(buffer), end(buffer), std::ostreambuf_iterator<char>(std::cout));
+            std::println("elf file");
+        }
+        else
+        {
+            std::ranges::copy(content, std::ostreambuf_iterator<char>(std::cout));
             std::println();
         }
     }
@@ -261,12 +270,12 @@ public:
 
 class sys_exit_read_handler
 {
-    std::unordered_map<__u64, std::vector<char>>& map_;
+    std::unordered_map<__u64, read_argument>& map_;
     blaze_symbolizer* symbolizer_;
     bpf_map* stack_trace_;
 
 public:
-    sys_exit_read_handler(std::unordered_map<__u64, std::vector<char>>& map,
+    sys_exit_read_handler(decltype(map_) map,
                           blaze_symbolizer* symbolizer, bpf_map* stack_trace) :
         map_{map},
         symbolizer_{symbolizer},
@@ -277,12 +286,13 @@ public:
     {
         auto event = static_cast<sys_exit_read_event*>(data);
 
-        std::println("pid: {:>6}, tid: {:>6}, read, ret: {:>5}", 
+        std::println("pid: {:>6}, tid: {:>6},   read, ret: {:>5}, file name: {}", 
             event->tgid, // pid
             event->pid,  // tid
-            event->ret); // {:>2} 代表右對齊、最小2格
+            event->ret,
+            std::string_view(event->name, event->size));
 
-        if (event->ret > 0)
+        if (event->ret >= 0)
         {
             map_[event->pid_tgid].resize(event->ret);
         }
@@ -306,17 +316,17 @@ void handle_sched_process_exit(int cpu, void *data, __u32 size)
 {
     auto event = static_cast<sched_process_exit_event*>(data);
 
-    std::print("pid: {}, tid: {}, ", 
+    std::print("pid: {:>6}, tid: {:>6}, ", 
         event->tgid, // pid
         event->pid); // tid
 
     auto status = event->exit_code;
     
     if (WIFEXITED(status))
-        std::println("exited, exit code: {}", WEXITSTATUS(status));
+        std::println("exited, ret: {:>5}", WEXITSTATUS(status));
 
     else if (WIFSIGNALED(status))
-        std::println("killed by signal {} SIG{} ({}){}",
+        std::println("killed, ret: {:>5} SIG{} ({}){}",
             WTERMSIG(status),
             sigabbrev_np(WTERMSIG(status)) ? sigabbrev_np(WTERMSIG(status)) : "null",
             sigdescr_np (WTERMSIG(status)) ? sigdescr_np (WTERMSIG(status)) : "null",
@@ -406,7 +416,7 @@ int main(int argc, char *argv[])
 
     int error = 0;
 
-    bool disable_read = true;
+    bool disable_read = false;
     
     if (disable_read)
     {

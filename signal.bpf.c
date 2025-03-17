@@ -317,12 +317,18 @@ int tracepoint__syscalls__sys_exit_read(struct trace_event_raw_sys_exit *ctx)
     // 釋放掉對應的 read_argument
     CHECK_ERROR(bpf_map_delete_elem(&read_map, &event.exit.pid_tgid));
 
-    // 編譯期檢查 event 是否為 8-byte 對齊（perf_event_output 需要對齊）
-    // _Static_assert(sizeof(event.exit) % 8 == 0, "event must be 8-byte aligned");
+    struct task_struct *task = (struct task_struct *)CHECK_PTR(bpf_get_current_task());
 
-    // 如果要蒐集錯誤時的 stack trace，可在這裡啟用
-    // if (event.exit.ret < 0)
-    //     event.exit.stack_id = CHECK_ERROR(bpf_get_stackid(ctx, &stack_trace, BPF_F_USER_STACK));
+    // BPF_CORE_READ_STR_INTO(event.exit.name, task, files, fdt, fd[0], f_path.dentry, d_name.name);
+    // task->files->fdt->fd[0]->f_path.dentry->d_name.name;
+
+    struct file **fd = NULL;
+    CHECK_ERROR(BPF_CORE_READ_INTO(&fd, task, files, fdt, fd));
+
+    struct file *f = NULL;
+    CHECK_ERROR(bpf_probe_read_kernel(&f, sizeof(f), fd + read_ptr->fd));
+
+    event.exit.size = CHECK_ERROR(BPF_CORE_READ_STR_INTO(&event.exit.name, f, f_path.dentry, d_name.name));
 
     // 將 sys_exit_read_event 傳送到 user space
     CHECK_ERROR(bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU,
@@ -453,6 +459,10 @@ int BPF_KPROBE(kprobe__do_coredump, const kernel_siginfo_t *siginfo)
 //             event.signal     = args[2];
 //             break;
 //     }
+
+    // 如果要蒐集錯誤時的 stack trace，可在這裡啟用
+    // if (event.exit.ret < 0)
+    //     event.exit.stack_id = CHECK_ERROR(bpf_get_stackid(ctx, &stack_trace, BPF_F_USER_STACK));
 
 //     bpf_perf_event_output(ctx, &signal_events, BPF_F_CURRENT_CPU, &event, sizeof(event));
 //     return 0;
