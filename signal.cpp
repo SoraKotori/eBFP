@@ -286,7 +286,7 @@ public:
     {
         auto event = static_cast<sys_exit_read_event*>(data);
 
-        std::println("pid: {:>6}, tid: {:>6},   read, ret: {:>5}, file name: {}", 
+        std::println("pid: {:>6}, tid: {:>6},   read, ret: {:>5}, name: \"{}\"", 
             event->tgid, // pid
             event->pid,  // tid
             event->ret,

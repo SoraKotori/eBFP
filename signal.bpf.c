@@ -97,8 +97,14 @@ struct EVENT_TYPE name =                  \
     __ptr;                       \
 })
 
-#define PRINT_EVENT_SIZE_ERR(event_size, max_size) \
-    bpf_printk(__FILE__ ":" STR(__LINE__) " event_size overflow: %d > %d\n", event_size, max_size)
+#define CHECK_SIZE(size, expr) \
+({                             \
+    if (size > sizeof(expr))   \
+    {                          \
+        bpf_printk(__FILE__ ":" STR(__LINE__) ": size overflow: " #size " > sizeof(" #expr ")"); \
+        return 0;              \
+    }                          \
+})
 
 __always_inline
 int pattern_strcmp(const char *const pattern, const char *const arg)
@@ -328,7 +334,13 @@ int tracepoint__syscalls__sys_exit_read(struct trace_event_raw_sys_exit *ctx)
     struct file *f = NULL;
     CHECK_ERROR(bpf_probe_read_kernel(&f, sizeof(f), fd + read_ptr->fd));
 
-    event.exit.size = CHECK_ERROR(BPF_CORE_READ_STR_INTO(&event.exit.name, f, f_path.dentry, d_name.name));
+    struct qstr d_name = {};
+    CHECK_ERROR(BPF_CORE_READ_INTO(&d_name, f, f_path.dentry, d_name));
+
+    event.exit.size = d_name.len;
+    CHECK_SIZE(event.exit.size, event.exit.name);
+
+    CHECK_ERROR(bpf_probe_read_kernel(event.exit.name, event.exit.size, d_name.name));
 
     // 將 sys_exit_read_event 傳送到 user space
     CHECK_ERROR(bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU,
@@ -370,11 +382,7 @@ int tracepoint__syscalls__sys_exit_read(struct trace_event_raw_sys_exit *ctx)
 
         // 計算實際的事件大小，避免超過 event.enter 結構大小，主要用途通過驗證器
         int event_size = offsetof(struct sys_enter_read_event, buf) + event.enter.size;
-        if (event_size > sizeof(event.enter))
-        {
-            PRINT_EVENT_SIZE_ERR(event_size, sizeof(event.enter));
-            break;
-        }
+        CHECK_SIZE(event_size, event.enter);
 
         // 將每個片段的 sys_enter_read_event 傳送到 user space
         CHECK_ERROR(bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU,
