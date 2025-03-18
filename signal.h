@@ -94,6 +94,7 @@ struct sys_exit_read_event
 
     PID_TGID_UNION;
     int ret;
+    __u16 i_mode;
     __u32 size;
     char name[MAX_ARG_LEN];
 };

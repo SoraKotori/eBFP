@@ -11,6 +11,7 @@
 #include <algorithm>
 
 #include <sys/wait.h>
+#include <sys/stat.h>
 
 #include <bpf/libbpf.h>
 #include <blazesym.h>
@@ -286,10 +287,38 @@ public:
     {
         auto event = static_cast<sys_exit_read_event*>(data);
 
-        std::println("pid: {:>6}, tid: {:>6},   read, ret: {:>5}, name: \"{}\"", 
+        std::string_view mode{};
+        std::string permission(10, '-');
+
+        if      (S_ISREG (event->i_mode)) { mode = "regular file";     permission[0] = '-'; }
+        else if (S_ISDIR (event->i_mode)) { mode = "directory";        permission[0] = 'd'; }
+        else if (S_ISCHR (event->i_mode)) { mode = "character device"; permission[0] = 'c'; }
+        else if (S_ISBLK (event->i_mode)) { mode = "block device";     permission[0] = 'b'; }
+        else if (S_ISFIFO(event->i_mode)) { mode = "FIFO/pipe";        permission[0] = 'p'; }
+        else if (S_ISLNK (event->i_mode)) { mode = "symbolic link";    permission[0] = 'l'; }
+        else if (S_ISSOCK(event->i_mode)) { mode = "socket";           permission[0] = 's'; }
+        else                              { mode = "unknown";          permission[0] = '?'; }
+
+        if (S_IRUSR & event->i_mode) permission[1] = 'r';
+        if (S_IWUSR & event->i_mode) permission[2] = 'w';
+        if (S_IXUSR & event->i_mode) permission[3] = 'x';
+        if (S_IRGRP & event->i_mode) permission[4] = 'r';
+        if (S_IWGRP & event->i_mode) permission[5] = 'w';
+        if (S_IXGRP & event->i_mode) permission[6] = 'x';
+        if (S_IROTH & event->i_mode) permission[7] = 'r';
+        if (S_IWOTH & event->i_mode) permission[8] = 'w';
+        if (S_IXOTH & event->i_mode) permission[9] = 'x';
+
+        if (S_ISUID & event->i_mode) permission[3] = (event->i_mode & S_IXUSR) ? 's' : 'S';
+        if (S_ISGID & event->i_mode) permission[6] = (event->i_mode & S_IXGRP) ? 's' : 'S';
+        if (S_ISVTX & event->i_mode) permission[9] = (event->i_mode & S_IXOTH) ? 't' : 'T';
+
+        std::println("pid: {:>6}, tid: {:>6},   read, ret: {:>5}, {} ({}), name: \"{}\"", 
             event->tgid, // pid
             event->pid,  // tid
             event->ret,
+            permission,
+            mode,
             std::string_view(event->name, event->size));
 
         if (event->ret >= 0)

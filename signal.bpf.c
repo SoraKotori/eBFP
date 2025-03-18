@@ -325,14 +325,13 @@ int tracepoint__syscalls__sys_exit_read(struct trace_event_raw_sys_exit *ctx)
 
     struct task_struct *task = (struct task_struct *)CHECK_PTR(bpf_get_current_task());
 
-    // BPF_CORE_READ_STR_INTO(event.exit.name, task, files, fdt, fd[0], f_path.dentry, d_name.name);
-    // task->files->fdt->fd[0]->f_path.dentry->d_name.name;
-
     struct file **fd = NULL;
     CHECK_ERROR(BPF_CORE_READ_INTO(&fd, task, files, fdt, fd));
 
     struct file *f = NULL;
     CHECK_ERROR(bpf_probe_read_kernel(&f, sizeof(f), fd + read_ptr->fd));
+
+    CHECK_ERROR(BPF_CORE_READ_INTO(&event.exit.i_mode, f, f_path.dentry, d_inode, i_mode));
 
     struct qstr d_name = {};
     CHECK_ERROR(BPF_CORE_READ_INTO(&d_name, f, f_path.dentry, d_name));
