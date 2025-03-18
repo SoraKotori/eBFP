@@ -93,10 +93,11 @@ struct sys_exit_read_event
     struct event_base base;
 
     PID_TGID_UNION;
+    int fd;
     int ret;
     __u16 i_mode;
     __u32 size;
-    char name[MAX_ARG_LEN];
+    char name[MAX_ARG_LEN]; 
 };
 
 struct sched_process_exit_event

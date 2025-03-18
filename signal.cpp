@@ -170,7 +170,7 @@ public:
         std::print("pid: {:>6}, tid: {:>6}, execve, ret: {:>5}, command: ", 
             event->tgid, // pid
             event->pid,  // tid
-            event->ret); // {:>2} 代表右對齊、最小2格
+            event->ret);
  
         auto& arg = map_[event->pid_tgid];
         arg.ret = event->ret;
@@ -225,7 +225,7 @@ public:
         std::println("pid: {:>6}, tid: {:>6},   kill, ret: {:>5}, target pid: {}, signal: {}", 
             event->tgid, // pid
             event->pid,  // tid
-            event->ret,  // {:>2} 代表右對齊、最小2格
+            event->ret,
             arg.target_pid,
             arg.signal);
 
@@ -287,7 +287,7 @@ public:
     {
         auto event = static_cast<sys_exit_read_event*>(data);
 
-        std::string_view mode{};
+        std::string_view mode;
         std::string permission(10, '-');
 
         if      (S_ISREG (event->i_mode)) { mode = "regular file";     permission[0] = '-'; }
@@ -313,10 +313,11 @@ public:
         if (S_ISGID & event->i_mode) permission[6] = (event->i_mode & S_IXGRP) ? 's' : 'S';
         if (S_ISVTX & event->i_mode) permission[9] = (event->i_mode & S_IXOTH) ? 't' : 'T';
 
-        std::println("pid: {:>6}, tid: {:>6},   read, ret: {:>5}, {} ({}), name: \"{}\"", 
+        std::println("pid: {:>6}, tid: {:>6},   read, ret: {:>5}, fd: {:>3}, {} ({}), name: \"{}\"", 
             event->tgid, // pid
             event->pid,  // tid
             event->ret,
+            event->fd,
             permission,
             mode,
             std::string_view(event->name, event->size));

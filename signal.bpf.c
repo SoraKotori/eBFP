@@ -302,43 +302,54 @@ int tracepoint__syscalls__sys_enter_read(struct trace_event_raw_sys_enter *ctx)
 SEC("tracepoint/syscalls/sys_exit_read")
 int tracepoint__syscalls__sys_exit_read(struct trace_event_raw_sys_exit *ctx)
 {
+    // 使用 union 同時宣告兩個事件結構，共用相同空間避免觸發 eBPF stack 限制
     union
     {
         struct sys_enter_read_event enter;
         struct sys_exit_read_event exit;
     } event;
 
-    // 初始化並填入 sys_exit_read_event 結構
-    event.exit.base.event_id = EVENT_ID(sys_exit_read_event);
-    event.exit.pid_tgid      = bpf_get_current_pid_tgid();
-    event.exit.ret           = ctx->ret;
+    event.exit.pid_tgid = bpf_get_current_pid_tgid();
 
     // 透過 pid_tgid 從 read_map 中查找對應的 read_argument 結構，如果不存在則不是要監視的 read 事件
     struct read_argument* read_ptr = bpf_map_lookup_elem(&read_map, &event.exit.pid_tgid);
     if (!read_ptr)
         return 0;
 
+    // 將讀取到的參數結構複製到本地 stack
     struct read_argument read_argument = *read_ptr;
 
     // 釋放掉對應的 read_argument
     CHECK_ERROR(bpf_map_delete_elem(&read_map, &event.exit.pid_tgid));
 
+    // 初始化並填入 sys_exit_read_event 結構
+    event.exit.base.event_id = EVENT_ID(sys_exit_read_event);
+    event.exit.fd            = read_argument.fd;
+    event.exit.ret           = ctx->ret;
+
+    // 取得當前 task 結構的指標
     struct task_struct *task = (struct task_struct *)CHECK_PTR(bpf_get_current_task());
 
+    // 透過 BPF_CORE_READ_INTO 取得 task 結構中 files -> fdt -> fd 的指標
     struct file **fd = NULL;
     CHECK_ERROR(BPF_CORE_READ_INTO(&fd, task, files, fdt, fd));
 
+    // 依照檔案描述符的索引，從 fd 陣列中讀取對應的 file 結構指標
     struct file *f = NULL;
-    CHECK_ERROR(bpf_probe_read_kernel(&f, sizeof(f), fd + read_ptr->fd));
+    CHECK_ERROR(bpf_probe_read_kernel(&f, sizeof(f), fd + read_argument.fd));
 
+    // 讀取 file 結構中 inode 的 i_mode 欄位，儲存到 sys_exit_read_event 結構中
     CHECK_ERROR(BPF_CORE_READ_INTO(&event.exit.i_mode, f, f_path.dentry, d_inode, i_mode));
 
+    // 讀取 dentry 結構中的 d_name 資訊（檔案名稱資訊）
     struct qstr d_name = {};
     CHECK_ERROR(BPF_CORE_READ_INTO(&d_name, f, f_path.dentry, d_name));
 
+    // 設定事件中的 size 欄位為 d_name 的長度
     event.exit.size = d_name.len;
     CHECK_SIZE(event.exit.size, event.exit.name);
 
+    // 從 kernel 空間讀取檔案名稱，存入 event.exit.name 陣列中
     CHECK_ERROR(bpf_probe_read_kernel(event.exit.name, event.exit.size, d_name.name));
 
     // 將 sys_exit_read_event 傳送到 user space
