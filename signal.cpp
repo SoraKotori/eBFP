@@ -84,8 +84,8 @@ void print_stack_trace(blaze_symbolizer* symbolizer, std::array<__u64, PERF_MAX_
         .type_size = sizeof(src),
         .pid = tgid,
         .debug_syms = true,
-        .perf_map  = true,
-        .map_files = true
+        .perf_map  = true
+        // .map_files = true
     };
 
     static_assert(sizeof(uint64_t) == sizeof(typename std::remove_cvref_t<decltype(stack)>::value_type));
@@ -100,18 +100,25 @@ void print_stack_trace(blaze_symbolizer* symbolizer, std::array<__u64, PERF_MAX_
     {
         std::println("blaze_symbolize_process_abs_addrs error: {}", blaze_err_str(blaze_err_last()));
 
-        for(std::size_t i = 0; i < std::size(stack); i++)
-            std::println("    #{:2} {:#018x}", i, stack[i]);
+        for(std::size_t i = 0; i < std::size(stack) && stack[i]; i++)
+            std::println("    #{:<2} {:#018x}", i, stack[i]);
 
         return;
     }
 
-    for(std::size_t i = 0; i < std::size(stack); i++)
+    // sudo eBFP/blazesym/target/debug/blazecli symbolize process --pid 259062 0x005642ad65d095
+    // 0x005642ad65d095: _start @ 0x1070+0x25
+
+    for(std::size_t i = 0; i < std::size(stack) && stack[i]; i++)
     {
-        std::println("    #{:2} {:#018x} name: {}, addr: {}, offset: {}", i, stack[i],
-            syms->syms[i].name ? syms->syms[i].name : "null",
+        std::println("    #{:<2} {:#018x} in {:<20} addr: {:#018x}, offset: {:#010x}, name: {}:{}:{}",
+            i, stack[i],
+            syms->syms[i].name           ? syms->syms[i].name : "null",
             syms->syms[i].addr,
-            syms->syms[i].offset);
+            syms->syms[i].offset,
+            syms->syms[i].code_info.file ? syms->syms[i].code_info.file : "null",
+            syms->syms[i].code_info.line,
+            syms->syms[i].code_info.column);
     }
 }
 
@@ -167,7 +174,7 @@ public:
     {
         auto event = static_cast<sys_exit_execve_event*>(data);
 
-        std::print("pid: {:>6}, tid: {:>6}, execve, ret: {:>5}, command: ", 
+        std::print("pid: {:>6}, tid: {:>6}, execve,  ret: {:>5}, command: ", 
             event->tgid, // pid
             event->pid,  // tid
             event->ret);
@@ -222,7 +229,7 @@ public:
         auto event = static_cast<sys_exit_kill_event*>(data);
         auto& arg = map_[event->pid_tgid];
 
-        std::println("pid: {:>6}, tid: {:>6},   kill, ret: {:>5}, target pid: {}, signal: {}", 
+        std::println("pid: {:>6}, tid: {:>6}, kill,    ret: {:>5}, target pid: {}, signal: {}", 
             event->tgid, // pid
             event->pid,  // tid
             event->ret,
@@ -272,15 +279,10 @@ public:
 class sys_exit_read_handler
 {
     std::unordered_map<__u64, read_argument>& map_;
-    blaze_symbolizer* symbolizer_;
-    bpf_map* stack_trace_;
 
 public:
-    sys_exit_read_handler(decltype(map_) map,
-                          blaze_symbolizer* symbolizer, bpf_map* stack_trace) :
-        map_{map},
-        symbolizer_{symbolizer},
-        stack_trace_{stack_trace}
+    sys_exit_read_handler(decltype(map_) map) :
+        map_{map}
     {}
 
     void operator()(int cpu, void *data, __u32 size)
@@ -313,7 +315,7 @@ public:
         if (S_ISGID & event->i_mode) permission[6] = (event->i_mode & S_IXGRP) ? 's' : 'S';
         if (S_ISVTX & event->i_mode) permission[9] = (event->i_mode & S_IXOTH) ? 't' : 'T';
 
-        std::println("pid: {:>6}, tid: {:>6},   read, ret: {:>5}, fd: {:>3}, {} ({}), name: \"{}\"", 
+        std::println("pid: {:>6}, tid: {:>6}, read,    ret: {:>5}, fd: {:>3}, {} ({}), name: \"{}\"", 
             event->tgid, // pid
             event->pid,  // tid
             event->ret,
@@ -326,19 +328,6 @@ public:
         {
             map_[event->pid_tgid].resize(event->ret);
         }
-        
-        // if (event->ret < 0)
-        // {
-
-        //     std::array<__u64, PERF_MAX_STACK_DEPTH> stack;
-        //     int error = bpf_map__lookup_elem(stack_trace_,
-        //                                      &event->stack_id, sizeof(event->stack_id),
-        //                                      std::data(stack), sizeof(stack), 0);
-        //     if (error < 0)
-        //         return;
-
-        //     print_stack_trace(symbolizer_, stack, event->tgid);
-        // }
     }
 };
 
@@ -353,10 +342,10 @@ void handle_sched_process_exit(int cpu, void *data, __u32 size)
     auto status = event->exit_code;
     
     if (WIFEXITED(status))
-        std::println("exited, ret: {:>5}", WEXITSTATUS(status));
+        std::println("exited,  ret: {:>5}", WEXITSTATUS(status));
 
     else if (WIFSIGNALED(status))
-        std::println("killed, ret: {:>5} SIG{} ({}){}",
+        std::println("killed,  ret: {:>5} SIG{} ({}){}",
             WTERMSIG(status),
             sigabbrev_np(WTERMSIG(status)) ? sigabbrev_np(WTERMSIG(status)) : "null",
             sigdescr_np (WTERMSIG(status)) ? sigdescr_np (WTERMSIG(status)) : "null",
@@ -392,6 +381,39 @@ public:
 
             std::println("    #{} {:#018x}", i, address);
         }
+    }
+};
+
+class sys_exit_handler
+{
+    blaze_symbolizer* symbolizer_;
+    bpf_map* stack_trace_;
+
+public:
+    sys_exit_handler(blaze_symbolizer* symbolizer, bpf_map* stack_trace) :
+        symbolizer_{symbolizer},
+        stack_trace_{stack_trace}
+    {}
+
+    void operator()(int cpu, void *data, __u32 size)
+    {
+        auto event = static_cast<sys_exit_event*>(data);
+
+        std::println("pid: {:>6}, tid: {:>6}, syscall, ret: {:>5}, number: {}", 
+            event->tgid,
+            event->pid,
+            event->ret,
+            event->syscall_nr
+        );
+
+        std::array<__u64, PERF_MAX_STACK_DEPTH> stack;
+        int error = bpf_map__lookup_elem(stack_trace_,
+                                            &event->stack_id, sizeof(event->stack_id),
+                                            std::data(stack), sizeof(stack), 0);
+        if (error < 0)
+            return;
+        
+        print_stack_trace(symbolizer_, stack, event->tgid);
     }
 };
 
@@ -433,6 +455,14 @@ public:
     }
 };
 
+template<typename Container, typename size_type = Container::size_type>
+auto set_ret(Container& container, size_type bit)
+{
+    using value_type = typename Container::value_type;
+
+    return container[bit / (sizeof(value_type) * 8)] |= 1 << bit % (sizeof(value_type) * 8);
+}
+
 int main(int argc, char *argv[])
 {
     if (SIG_ERR == std::signal(SIGINT,  signal_handler)) return EXIT_FAILURE;
@@ -444,11 +474,9 @@ int main(int argc, char *argv[])
     if (!skeleton)
         return EXIT_FAILURE;
 
-    int error = 0;
-
-    bool disable_read = false;
-    
-    if (disable_read)
+    int  error = 0;
+    bool disable_read = true;
+    if  (disable_read)
     {
         if ((error = bpf_program__set_autoload(skeleton->progs.tracepoint__syscalls__sys_enter_read, false)) < 0)
             return EXIT_FAILURE;
@@ -460,25 +488,63 @@ int main(int argc, char *argv[])
     if ((error = signal_bpf::load(skeleton.get())) < 0)
         return EXIT_FAILURE;
 
-    // update pattern to bpf map
     __u32 key = 0;
     char pattern[MAX_ARG_LEN] = "";
+
+    // update pattern to bpf map
     if ((error = bpf_map__update_elem(skeleton->maps.command_pattern,
                                       &key, sizeof(key),
                                       pattern, sizeof(pattern), BPF_ANY)) < 0)
+        return EXIT_FAILURE;
+
+    struct stat st{};
+    if ((error = stat("/proc/self/ns/pid", &st)) < 0)
+        return EXIT_FAILURE;
+
+    self_t self =
+    {
+        .pid  = static_cast<__u32>(syscall(SYS_gettid)),
+        .tgid = static_cast<__u32>(syscall(SYS_getpid)),
+        .dev  = st.st_dev,
+        .ino  = st.st_ino
+    };
+
+    // update self to bpf map
+    if ((error = bpf_map__update_elem(skeleton->maps.self_map,
+                                      &key, sizeof(key),
+                                      &self, sizeof(self), BPF_ANY)) < 0)
+        return EXIT_FAILURE;
+
+    std::array<__u64, MAX_SYSCALL> negative_ret{};
+    set_ret(negative_ret, __NR_open);
+    set_ret(negative_ret, __NR_openat);
+    set_ret(negative_ret, __NR_openat2);
+
+    // update negative_ret to bpf map
+    if ((error = bpf_map__update_elem(skeleton->maps.negative_ret_map,
+                                      &key, sizeof(key),
+                                      std::data(negative_ret), sizeof(negative_ret), BPF_ANY)) < 0)
         return EXIT_FAILURE;
 
     // attach eBPF 程式到對應的 tracepoint
     if ((error = signal_bpf::attach(skeleton.get())) < 0)
         return EXIT_FAILURE;
 
+    // const char *debug_dirs[] = { "eBFP/build/Debug", "" };
 
-    std::unordered_map<__u64, execve_argument> execve_map;
-    std::unordered_map<__u64, kill_argument> kill_map;
-    std::unordered_map<__u64, read_argument> read_map;
-    
+    struct blaze_symbolizer_opts symbolizer_opts =
+    {
+        .type_size = sizeof(symbolizer_opts),
+        // .debug_dirs = debug_dirs,
+        // .debug_dirs_len = 1,
+        .auto_reload = true, // 可選：若 ELF 檔有變更，自動 reload
+        .code_info = true,   // 啟用 DWARF 行號資訊解析
+        .inlined_fns = true, // 可選：還原 inline 函數
+        .demangle = true     // 可選：還原 C++ / Rust 函數名稱
+    };
+
     auto symbolizer = std::unique_ptr<blaze_symbolizer, decltype(&blaze_symbolizer_free)>{
-        blaze_symbolizer_new(),
+        blaze_symbolizer_new_opts(&symbolizer_opts),
         blaze_symbolizer_free};
     if (!symbolizer)
     {
@@ -486,15 +552,20 @@ int main(int argc, char *argv[])
         return EXIT_FAILURE;
     }
 
+    std::unordered_map<__u64, execve_argument> execve_map;
+    std::unordered_map<__u64, kill_argument> kill_map;
+    std::unordered_map<__u64, read_argument> read_map;
+    
     event_handler<EVENT_MAX> handler;
     handler[EVENT_ID(sys_enter_execve_event)]   = sys_enter_execve_handler{execve_map};
     handler[EVENT_ID(sys_exit_execve_event)]    = sys_exit_execve_handler{execve_map};
     handler[EVENT_ID(sys_enter_kill_event)]     = sys_enter_kill_handler{kill_map};
     handler[EVENT_ID(sys_exit_kill_event)]      = sys_exit_kill_handler{kill_map};
     handler[EVENT_ID(sys_enter_read_event)]     = sys_enter_read_handler{read_map};
-    handler[EVENT_ID(sys_exit_read_event)]      = sys_exit_read_handler{read_map, symbolizer.get(), skeleton->maps.stack_trace};
+    handler[EVENT_ID(sys_exit_read_event)]      = sys_exit_read_handler{read_map};
     handler[EVENT_ID(sched_process_exit_event)] = handle_sched_process_exit;
     handler[EVENT_ID(do_coredump_event)]        = do_coredump_handler{symbolizer.get(), skeleton->maps.stack_trace};
+    handler[EVENT_ID(sys_exit_event)]           = sys_exit_handler{symbolizer.get(), skeleton->maps.stack_trace};
     
     // perf buffer 選項
     perf_buffer_opts pb_opts{ .sz = sizeof(perf_buffer_opts) };

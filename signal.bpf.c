@@ -14,20 +14,41 @@ struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
     __uint(max_entries, 1);
     __type(key, u32);
+    __type(value, struct self_t);
+} self_map SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, u32);
+    __type(value, u64[MAX_SYSCALL]);
+} negative_ret_map SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, u32);
+    __type(value, u64[MAX_SYSCALL]);
+} positive_ret_map SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, u32);
     __type(value, char[MAX_ARG_LEN]);
 } command_pattern SEC(".maps");
 
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, MAX_PID_TGIDS);
-    __type(key, __u64);
+    __type(key, u64);
     __type(value, int);
 } execve_map SEC(".maps");
 
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, MAX_PID_TGIDS);
-    __type(key, __u64);
+    __type(key, u64);
     __type(value, int);
 } kill_map SEC(".maps");
 
@@ -41,7 +62,7 @@ struct read_argument
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, MAX_PID_TGIDS);
-    __type(key, __u64);
+    __type(key, u64);
     __type(value, struct read_argument);
 } read_map SEC(".maps");
 
@@ -432,9 +453,26 @@ int BPF_KPROBE(kprobe__do_coredump, const kernel_siginfo_t *siginfo)
         .stack_id = stack_id
     );
 
-    // struct task_struct *task = (struct task_struct *)bpf_get_current_task();
-    // struct mm_struct *mm = BPF_CORE_READ(task, mm);
-    // struct vm_area_struct *vma = BPF_CORE_READ(mm, mmap);
+    struct task_struct *task = (struct task_struct *)CHECK_PTR(bpf_get_current_task());
+
+    struct vm_area_struct *vma = NULL;
+    CHECK_ERROR(BPF_CORE_READ_INTO(&vma, task, mm, mmap));
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 3, 0)
+    #pragma unroll
+#endif
+    for (__u32 i = 0; i < 8 && vma; i++)
+    {
+        vma->vm_file;
+
+        CHECK_ERROR(BPF_CORE_READ_INTO(&event.vma[i].vm_start, vma, vm_start));
+        CHECK_ERROR(BPF_CORE_READ_INTO(&event.vma[i].vm_end,   vma, vm_end));
+        CHECK_ERROR(BPF_CORE_READ_INTO(&event.vma[i].vm_pgoff, vma, vm_pgoff));
+        
+        struct vm_area_struct *new_vma = NULL;
+        CHECK_ERROR(BPF_CORE_READ_INTO(&new_vma, vma, vm_next));
+        vma = new_vma;
+    }
 
     CHECK_ERROR(BPF_CORE_READ_INTO(&event.si_signo, siginfo, si_signo));
     CHECK_ERROR(BPF_CORE_READ_INTO(&event.si_code,  siginfo, si_code));
@@ -445,46 +483,47 @@ int BPF_KPROBE(kprobe__do_coredump, const kernel_siginfo_t *siginfo)
     return 0;
 }
 
-// SEC("raw_tracepoint/sys_enter")
-// int raw_tracepoint__sys_enter(struct bpf_raw_tracepoint_args *ctx)
-// {
-//     __u64 pid_tgid = bpf_get_current_pid_tgid();
+SEC("raw_tracepoint/sys_exit")
+int raw_tracepoint__sys_exit(struct bpf_raw_tracepoint_args *ctx)
+{
+    u32 key = 0;
+    struct self_t *self = CHECK_PTR(bpf_map_lookup_elem(&self_map, &key));
+    if (!self)
+        return 0;
 
-//     struct sys_enter_kill_event event =
-//     {
-//         .sender_pid = pid_tgid >> 32,
-//         .sender_tid = pid_tgid
-//     };
+    struct bpf_pidns_info nsdata;
+    CHECK_ERROR(bpf_get_ns_current_pid_tgid(self->dev, self->ino, &nsdata, sizeof(nsdata)));
+
+    INIT_EVENT(event, sys_exit_event,
+        .pid  = nsdata.pid,
+        .tgid = nsdata.tgid
+    );
+
+    if (self->pid_tgid == event.pid_tgid)
+        return 0;
+
+    struct pt_regs *regs = (struct pt_regs *)ctx->args[0];
+    CHECK_ERROR(BPF_CORE_READ_INTO(&event.syscall_nr, regs, orig_ax));
+    CHECK_ERROR(BPF_CORE_READ_INTO(&event.ret,        regs, ax));
+
+    u64 *ret_map = CHECK_PTR(bpf_map_lookup_elem(event.ret < 0 ? (void*)&negative_ret_map
+                                                               : (void*)&positive_ret_map,
+                                                 &key));
+    if (!ret_map)
+        return 0;
+
+    u64 syscell_idx =      event.syscall_nr / (sizeof(u64) * 8 /* bits */);
+    u64 syscell_bit = 1 << event.syscall_nr % (sizeof(u64) * 8 /* bits */);
     
-//     unsigned long args[3];
-//     if (BPF_CORE_READ_INTO(&args, ctx, args))
-//         return 0;
+    if (syscell_idx < MAX_SYSCALL &&
+        ret_map[syscell_idx] & syscell_bit)
+    {
+        event.stack_id = CHECK_ERROR(bpf_get_stackid(ctx, &stack_trace, BPF_F_USER_STACK));
+        CHECK_ERROR(bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU, &event, sizeof(event)));
+    }
 
-//     switch (ctx->event_id)
-//     {
-//         case __NR_execve:
-//         case __NR_kill:
-//             event.target_pid = args[0];
-//             event.signal     = args[1];
-//             break;
-//         case __NR_tkill:
-//             event.target_tid = args[0];
-//             event.signal     = args[1];
-//             break;
-//         case __NR_tgkill:
-//             event.target_pid = args[0];
-//             event.target_tid = args[1];
-//             event.signal     = args[2];
-//             break;
-//     }
-
-    // 如果要蒐集錯誤時的 stack trace，可在這裡啟用
-    // if (event.exit.ret < 0)
-    //     event.exit.stack_id = CHECK_ERROR(bpf_get_stackid(ctx, &stack_trace, BPF_F_USER_STACK));
-
-//     bpf_perf_event_output(ctx, &signal_events, BPF_F_CURRENT_CPU, &event, sizeof(event));
-//     return 0;
-// }
+    return 0;
+}
 
 // SEC("kprobe/__send_signal")
 // int BPF_KPROBE(kprobe__send_signal, int sig, struct siginfo *info, struct task_struct *task)

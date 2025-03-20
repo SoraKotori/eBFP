@@ -1,6 +1,7 @@
 #pragma onec
 
 #define MAX_ARG_LEN 256 // ebpf stack max 512 bytes
+#define MAX_SYSCALL 8 // 512 divide 64
 
 #ifndef PERF_MAX_STACK_DEPTH
 #define PERF_MAX_STACK_DEPTH 127
@@ -14,7 +15,8 @@
     MAKE_EVENT_ID(sys_enter_read_event) \
     MAKE_EVENT_ID(sys_exit_read_event) \
     MAKE_EVENT_ID(sched_process_exit_event) \
-    MAKE_EVENT_ID(do_coredump_event)
+    MAKE_EVENT_ID(do_coredump_event) \
+    MAKE_EVENT_ID(sys_exit_event)
 
 #define EVENT_ID(EVENT_TYPE) EVENT_TYPE##_ID
 
@@ -116,4 +118,28 @@ struct do_coredump_event
     int si_signo;
     int si_code;
     __u32 stack_id;
+
+    struct vm_area
+    {
+        unsigned long vm_start;
+        unsigned long vm_end;
+        unsigned long vm_pgoff;
+    } vma[MAX_ARG_LEN / sizeof(struct vm_area)];
+};
+
+struct sys_exit_event
+{
+    struct event_base base;
+
+    PID_TGID_UNION;
+    long syscall_nr;
+    long ret;
+    __u32 stack_id;
+};
+
+struct self_t
+{
+    PID_TGID_UNION;
+    __u64 dev;
+    __u64 ino;
 };
