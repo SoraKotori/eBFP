@@ -84,7 +84,7 @@ void print_stack_trace(blaze_symbolizer* symbolizer, std::array<__u64, PERF_MAX_
         .type_size = sizeof(src),
         .pid = tgid,
         .debug_syms = true,
-        .perf_map  = true
+        // .perf_map  = true
         // .map_files = true
     };
 
@@ -111,14 +111,19 @@ void print_stack_trace(blaze_symbolizer* symbolizer, std::array<__u64, PERF_MAX_
 
     for(std::size_t i = 0; i < std::size(stack) && stack[i]; i++)
     {
-        std::println("    #{:<2} {:#018x} in {:<20} addr: {:#018x}, offset: {:#010x}, name: {}:{}:{}",
+        std::print("    #{:<2} {:#018x} in {:<20}",
             i, stack[i],
-            syms->syms[i].name           ? syms->syms[i].name : "null",
-            syms->syms[i].addr,
-            syms->syms[i].offset,
-            syms->syms[i].code_info.file ? syms->syms[i].code_info.file : "null",
-            syms->syms[i].code_info.line,
-            syms->syms[i].code_info.column);
+            syms->syms[i].name ? syms->syms[i].name : "null");
+
+        if (syms->syms[i].reason)
+            std::println(" {}", blaze_symbolize_reason_str(syms->syms[i].reason));
+        else
+            std::println(" addr: {:#018x}, offset: {:#010x}, name: {}:{}:{}",
+                syms->syms[i].addr,
+                syms->syms[i].offset,
+                syms->syms[i].code_info.file ? syms->syms[i].code_info.file : "null",
+                syms->syms[i].code_info.line,
+                syms->syms[i].code_info.column);
     }
 }
 
@@ -537,10 +542,10 @@ int main(int argc, char *argv[])
         .type_size = sizeof(symbolizer_opts),
         // .debug_dirs = debug_dirs,
         // .debug_dirs_len = 1,
-        .auto_reload = true, // 可選：若 ELF 檔有變更，自動 reload
+        // .auto_reload = true, // 可選：若 ELF 檔有變更，自動 reload
         .code_info = true,   // 啟用 DWARF 行號資訊解析
-        .inlined_fns = true, // 可選：還原 inline 函數
-        .demangle = true     // 可選：還原 C++ / Rust 函數名稱
+        // .inlined_fns = true, // 可選：還原 inline 函數
+        // .demangle = true     // 可選：還原 C++ / Rust 函數名稱
     };
 
     auto symbolizer = std::unique_ptr<blaze_symbolizer, decltype(&blaze_symbolizer_free)>{
