@@ -9,6 +9,7 @@
 #include <print>
 #include <coroutine>
 #include <algorithm>
+#include <span>
 
 #include <sys/wait.h>
 #include <sys/stat.h>
@@ -77,8 +78,67 @@ struct event_awaiter
 //     }
 // }
 
-void print_stack_trace(blaze_symbolizer* symbolizer, std::array<__u64, PERF_MAX_STACK_DEPTH>& stack, uint32_t tgid)
+template<typename T, std::size_t Extent = std::dynamic_extent>
+void print_stack_trace(blaze_normalizer* normalizer,
+                       blaze_symbolizer* symbolizer,
+                       uint32_t tgid,
+                       std::span<T, Extent> addrs)
 {
+    blaze_normalize_opts opts =
+    {
+        .type_size = sizeof(opts)
+    };
+
+    auto output = std::unique_ptr<blaze_normalized_user_output, decltype(&blaze_user_output_free)>{
+        blaze_normalize_user_addrs_opts(normalizer,
+                                        tgid,
+                                        reinterpret_cast<uint64_t*>(std::data(addrs)),
+                                        std::size(addrs),
+                                        &opts),
+        blaze_user_output_free};
+    if (!output)
+    {
+        std::println("blaze_normalize_user_addrs_opts: {}", blaze_err_str(blaze_err_last()));
+        return;
+    }
+        
+    for (std::size_t i = 0; i < std::size(addrs); i++)
+    {
+        const auto& meta = output->metas[output->outputs[i].meta_idx];
+
+        if      (meta.kind == blaze_user_meta_kind::BLAZE_USER_META_UNKNOWN)
+        {
+            std::println("    #{:<2} {:#018x}    {}",
+                i,
+                output->outputs[i].output,
+                blaze_normalize_reason_str(meta.variant.unknown.reason));
+        }
+        else if (meta.kind == blaze_user_meta_kind::BLAZE_USER_META_APK)
+        {
+            std::println("    #{:<2} {:#018x} in {}",
+                i,
+                output->outputs[i].output,
+                meta.variant.apk.path);
+        }
+        else if (meta.kind == blaze_user_meta_kind::BLAZE_USER_META_ELF)
+        {
+            std::print("    #{:<2} {:#018x} in {}",
+                i,
+                output->outputs[i].output,
+                meta.variant.elf.path);
+            
+            if (meta.variant.elf.build_id_len)
+            {
+                std::print(", build_id: ");
+                for (auto byte : std::span(meta.variant.elf.build_id,
+                                           meta.variant.elf.build_id_len))
+                    std::print("{:02X}", byte);
+            }
+
+            std::println();
+        }
+    }
+
     blaze_symbolize_src_process src =
     {
         .type_size = sizeof(src),
@@ -88,20 +148,20 @@ void print_stack_trace(blaze_symbolizer* symbolizer, std::array<__u64, PERF_MAX_
         // .map_files = true
     };
 
-    static_assert(sizeof(uint64_t) == sizeof(typename std::remove_cvref_t<decltype(stack)>::value_type));
+    static_assert(sizeof(uint64_t) == sizeof(typename std::remove_cvref_t<decltype(addrs)>::value_type));
 
     auto syms = std::unique_ptr<const blaze_syms, decltype(&blaze_syms_free)>{
         blaze_symbolize_process_abs_addrs(symbolizer,
                                           &src,
-                                          reinterpret_cast<uint64_t*>(std::data(stack)),
-                                          std::size(stack)),
+                                          reinterpret_cast<uint64_t*>(std::data(addrs)),
+                                          std::size(addrs)),
         blaze_syms_free};
     if (!syms)
     {
-        std::println("blaze_symbolize_process_abs_addrs error: {}", blaze_err_str(blaze_err_last()));
+        std::println("blaze_symbolize_process_abs_addrs: {}", blaze_err_str(blaze_err_last()));
 
-        for(std::size_t i = 0; i < std::size(stack) && stack[i]; i++)
-            std::println("    #{:<2} {:#018x}", i, stack[i]);
+        for(std::size_t i = 0; i < std::size(addrs); i++)
+            std::println("    #{:<2} {:#018x}", i, addrs[i]);
 
         return;
     }
@@ -109,10 +169,10 @@ void print_stack_trace(blaze_symbolizer* symbolizer, std::array<__u64, PERF_MAX_
     // sudo eBFP/blazesym/target/debug/blazecli symbolize process --pid 259062 0x005642ad65d095
     // 0x005642ad65d095: _start @ 0x1070+0x25
 
-    for(std::size_t i = 0; i < std::size(stack) && stack[i]; i++)
+    for(std::size_t i = 0; i < std::size(addrs); i++)
     {
         std::print("    #{:<2} {:#018x} in {:<20}",
-            i, stack[i],
+            i, addrs[i],
             syms->syms[i].name ? syms->syms[i].name : "null");
 
         if (syms->syms[i].reason)
@@ -234,7 +294,7 @@ public:
         auto event = static_cast<sys_exit_kill_event*>(data);
         auto& arg = map_[event->pid_tgid];
 
-        std::println("pid: {:>6}, tid: {:>6}, kill,    ret: {:>5}, target pid: {}, signal: {}", 
+        std::println("pid: {:>6}, tid: {:>6}, kill,    ret: {:>5}, target pid: {}, signal: {}",
             event->tgid, // pid
             event->pid,  // tid
             event->ret,
@@ -391,11 +451,13 @@ public:
 
 class sys_exit_handler
 {
+    blaze_normalizer* normalizer_;
     blaze_symbolizer* symbolizer_;
     bpf_map* stack_trace_;
 
 public:
-    sys_exit_handler(blaze_symbolizer* symbolizer, bpf_map* stack_trace) :
+    sys_exit_handler(blaze_normalizer* normalizer, blaze_symbolizer* symbolizer, bpf_map* stack_trace) :
+        normalizer_{normalizer},
         symbolizer_{symbolizer},
         stack_trace_{stack_trace}
     {}
@@ -413,12 +475,16 @@ public:
 
         std::array<__u64, PERF_MAX_STACK_DEPTH> stack;
         int error = bpf_map__lookup_elem(stack_trace_,
-                                            &event->stack_id, sizeof(event->stack_id),
-                                            std::data(stack), sizeof(stack), 0);
+                                         &event->stack_id, sizeof(event->stack_id),
+                                         std::data(stack), sizeof(stack), 0);
         if (error < 0)
             return;
         
-        print_stack_trace(symbolizer_, stack, event->tgid);
+        std::span<decltype(stack)::value_type> addrs{
+            std::begin(stack),
+            std::ranges::find(stack, 0)};
+
+        print_stack_trace(normalizer_, symbolizer_, event->tgid, addrs);
     }
 };
 
@@ -535,13 +601,14 @@ int main(int argc, char *argv[])
     if ((error = signal_bpf::attach(skeleton.get())) < 0)
         return EXIT_FAILURE;
 
-    // const char *debug_dirs[] = { "eBFP/build/Debug", "" };
+    // const char *debug_dirs[] = { "/usr/lib/debug",
+    //                              "/usr/lib/debug/.build-id" };
 
-    struct blaze_symbolizer_opts symbolizer_opts =
+    blaze_symbolizer_opts symbolizer_opts =
     {
         .type_size = sizeof(symbolizer_opts),
-        // .debug_dirs = debug_dirs,
-        // .debug_dirs_len = 1,
+        // .debug_dirs = std::data(debug_dirs),
+        // .debug_dirs_len = std::size(debug_dirs),
         // .auto_reload = true, // 可選：若 ELF 檔有變更，自動 reload
         .code_info = true,   // 啟用 DWARF 行號資訊解析
         // .inlined_fns = true, // 可選：還原 inline 函數
@@ -553,7 +620,18 @@ int main(int argc, char *argv[])
         blaze_symbolizer_free};
     if (!symbolizer)
     {
-        std::println("blaze_symbolizer_new error: {}", blaze_err_str(blaze_err_last()));
+        std::println("blaze_symbolizer_new_opts: {}", blaze_err_str(blaze_err_last()));
+        return EXIT_FAILURE;
+    }
+
+    blaze_normalizer_opts normalizer_opts = { .type_size = sizeof(normalizer_opts) };
+
+    auto normalizer = std::unique_ptr<blaze_normalizer, decltype(&blaze_normalizer_free)>{
+        blaze_normalizer_new_opts(&normalizer_opts),
+        blaze_normalizer_free};
+    if (!normalizer)
+    {
+        std::println("blaze_normalizer_new_opts: {}", blaze_err_str(blaze_err_last()));
         return EXIT_FAILURE;
     }
 
@@ -570,7 +648,7 @@ int main(int argc, char *argv[])
     handler[EVENT_ID(sys_exit_read_event)]      = sys_exit_read_handler{read_map};
     handler[EVENT_ID(sched_process_exit_event)] = handle_sched_process_exit;
     handler[EVENT_ID(do_coredump_event)]        = do_coredump_handler{symbolizer.get(), skeleton->maps.stack_trace};
-    handler[EVENT_ID(sys_exit_event)]           = sys_exit_handler{symbolizer.get(), skeleton->maps.stack_trace};
+    handler[EVENT_ID(sys_exit_event)]           = sys_exit_handler{normalizer.get(), symbolizer.get(), skeleton->maps.stack_trace};
     
     // perf buffer 選項
     perf_buffer_opts pb_opts{ .sz = sizeof(perf_buffer_opts) };
