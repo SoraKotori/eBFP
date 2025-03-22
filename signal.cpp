@@ -108,24 +108,63 @@ void print_stack_trace(blaze_normalizer* normalizer,
 
         if      (meta.kind == blaze_user_meta_kind::BLAZE_USER_META_UNKNOWN)
         {
-            std::println("    #{:<2} {:#018x}    {}",
-                i,
-                output->outputs[i].output,
+            std::print("    {:>2}, abs_addr: {:>#18x}, {}",
+                i, addrs[i],
                 blaze_normalize_reason_str(meta.variant.unknown.reason));
         }
         else if (meta.kind == blaze_user_meta_kind::BLAZE_USER_META_APK)
         {
-            std::println("    #{:<2} {:#018x} in {}",
-                i,
-                output->outputs[i].output,
-                meta.variant.apk.path);
+            std::print("    {:>2}, abs_addr: {:>#18x}, apk: {:40} apk_off: {:>#10x}",
+                i, addrs[i],
+                std::format("\"{}\"", meta.variant.apk.path),
+                output->outputs[i].output);
         }
         else if (meta.kind == blaze_user_meta_kind::BLAZE_USER_META_ELF)
         {
-            std::print("    #{:<2} {:#018x} in {}",
-                i,
-                output->outputs[i].output,
-                meta.variant.elf.path);
+            std::print("    {:>2}, abs_addr: {:>#18x}, elf: {:40} elf_off: {:>#10x}",
+                i, addrs[i],
+                std::format("\"{}\"", meta.variant.elf.path),
+                output->outputs[i].output);
+
+            // struct bpf_stack_build_id id_off;
+
+            blaze_symbolize_src_elf src =
+            {
+                .type_size  = sizeof(src),
+                .path       = meta.variant.elf.path,
+                .debug_syms = true
+            };
+
+            auto syms = std::unique_ptr<const blaze_syms, decltype(&blaze_syms_free)>{
+                blaze_symbolize_elf_file_offsets(symbolizer,
+                                                 &src,
+                                                 &output->outputs[i].output,
+                                                 1),
+                blaze_syms_free};
+
+            if (syms)
+            {
+                const auto& sym = syms->syms[0];
+                if (sym.reason)
+                    std::print(", \"{}\"", blaze_symbolize_reason_str(sym.reason));
+                else
+                {
+                    std::print(", sym: {}, sym_addr: {:#010x}, sym_off: {:#010x}",
+                        sym.name,
+                        sym.addr,
+                        sym.offset);
+                    
+                    if (sym.code_info.file)
+                        std::print(", file: {}:{}:{}",
+                            sym.code_info.file,
+                            sym.code_info.line,
+                            sym.code_info.column);
+                }
+            }
+            else
+            {
+                std::print(", {}", blaze_err_str(blaze_err_last()));
+            }
             
             if (meta.variant.elf.build_id_len)
             {
@@ -139,52 +178,52 @@ void print_stack_trace(blaze_normalizer* normalizer,
         }
     }
 
-    blaze_symbolize_src_process src =
-    {
-        .type_size = sizeof(src),
-        .pid = tgid,
-        .debug_syms = true,
-        // .perf_map  = true
-        // .map_files = true
-    };
+    // blaze_symbolize_src_process src =
+    // {
+    //     .type_size = sizeof(src),
+    //     .pid = tgid,
+    //     .debug_syms = true,
+    //     // .perf_map  = true
+    //     // .map_files = true
+    // };
 
-    static_assert(sizeof(uint64_t) == sizeof(typename std::remove_cvref_t<decltype(addrs)>::value_type));
+    // static_assert(sizeof(uint64_t) == sizeof(typename std::remove_cvref_t<decltype(addrs)>::value_type));
 
-    auto syms = std::unique_ptr<const blaze_syms, decltype(&blaze_syms_free)>{
-        blaze_symbolize_process_abs_addrs(symbolizer,
-                                          &src,
-                                          reinterpret_cast<uint64_t*>(std::data(addrs)),
-                                          std::size(addrs)),
-        blaze_syms_free};
-    if (!syms)
-    {
-        std::println("blaze_symbolize_process_abs_addrs: {}", blaze_err_str(blaze_err_last()));
+    // auto syms = std::unique_ptr<const blaze_syms, decltype(&blaze_syms_free)>{
+    //     blaze_symbolize_process_abs_addrs(symbolizer,
+    //                                       &src,
+    //                                       reinterpret_cast<uint64_t*>(std::data(addrs)),
+    //                                       std::size(addrs)),
+    //     blaze_syms_free};
+    // if (!syms)
+    // {
+    //     std::println("blaze_symbolize_process_abs_addrs: {}", blaze_err_str(blaze_err_last()));
 
-        for(std::size_t i = 0; i < std::size(addrs); i++)
-            std::println("    #{:<2} {:#018x}", i, addrs[i]);
+    //     for(std::size_t i = 0; i < std::size(addrs); i++)
+    //         std::println("    #{:<2} {:#018x}", i, addrs[i]);
 
-        return;
-    }
+    //     return;
+    // }
 
     // sudo eBFP/blazesym/target/debug/blazecli symbolize process --pid 259062 0x005642ad65d095
     // 0x005642ad65d095: _start @ 0x1070+0x25
 
-    for(std::size_t i = 0; i < std::size(addrs); i++)
-    {
-        std::print("    #{:<2} {:#018x} in {:<20}",
-            i, addrs[i],
-            syms->syms[i].name ? syms->syms[i].name : "null");
+    // for(std::size_t i = 0; i < std::size(addrs); i++)
+    // {
+    //     std::print("    #{:<2} {:#018x} in {:<20}",
+    //         i, addrs[i],
+    //         syms->syms[i].name ? syms->syms[i].name : "null");
 
-        if (syms->syms[i].reason)
-            std::println(" {}", blaze_symbolize_reason_str(syms->syms[i].reason));
-        else
-            std::println(" addr: {:#018x}, offset: {:#010x}, name: {}:{}:{}",
-                syms->syms[i].addr,
-                syms->syms[i].offset,
-                syms->syms[i].code_info.file ? syms->syms[i].code_info.file : "null",
-                syms->syms[i].code_info.line,
-                syms->syms[i].code_info.column);
-    }
+    //     if (syms->syms[i].reason)
+    //         std::println(" {}", blaze_symbolize_reason_str(syms->syms[i].reason));
+    //     else
+    //         std::println(" sym_addr: {:#018x}, sym_off: {:#010x}, name: {}:{}:{}",
+    //             syms->syms[i].addr,
+    //             syms->syms[i].offset,
+    //             syms->syms[i].code_info.file ? syms->syms[i].code_info.file : "null",
+    //             syms->syms[i].code_info.line,
+    //             syms->syms[i].code_info.column);
+    // }
 }
 
 struct execve_argument
@@ -624,7 +663,12 @@ int main(int argc, char *argv[])
         return EXIT_FAILURE;
     }
 
-    blaze_normalizer_opts normalizer_opts = { .type_size = sizeof(normalizer_opts) };
+    blaze_normalizer_opts normalizer_opts =
+    {
+        .type_size = sizeof(normalizer_opts),
+        .build_ids = true,
+        .cache_build_ids = true
+    };
 
     auto normalizer = std::unique_ptr<blaze_normalizer, decltype(&blaze_normalizer_free)>{
         blaze_normalizer_new_opts(&normalizer_opts),
