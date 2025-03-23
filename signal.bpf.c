@@ -9,6 +9,7 @@
 
 #define MAX_ARGS 64
 #define MAX_PID_TGIDS 8192
+#define MAX_NAME_LEN 64
 
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
@@ -120,9 +121,9 @@ struct EVENT_TYPE name =                  \
 
 #define CHECK_SIZE(size, expr) \
 ({                             \
-    if (size > sizeof(expr))   \
+    if (size > expr)   \
     {                          \
-        bpf_printk(__FILE__ ":" STR(__LINE__) ": size overflow: " #size " > sizeof(" #expr ")"); \
+        bpf_printk(__FILE__ ":" STR(__LINE__) ": size overflow: " #size " > " #expr); \
         return 0;              \
     }                          \
 })
@@ -368,7 +369,7 @@ int tracepoint__syscalls__sys_exit_read(struct trace_event_raw_sys_exit *ctx)
 
     // 設定事件中的 size 欄位為 d_name 的長度
     event.exit.size = d_name.len;
-    CHECK_SIZE(event.exit.size, event.exit.name);
+    CHECK_SIZE(event.exit.size, sizeof(event.exit.name));
 
     // 從 kernel 空間讀取檔案名稱，存入 event.exit.name 陣列中
     CHECK_ERROR(bpf_probe_read_kernel(event.exit.name, event.exit.size, d_name.name));
@@ -413,7 +414,7 @@ int tracepoint__syscalls__sys_exit_read(struct trace_event_raw_sys_exit *ctx)
 
         // 計算實際的事件大小，避免超過 event.enter 結構大小，主要用途通過驗證器
         int event_size = offsetof(struct sys_enter_read_event, buf) + event.enter.size;
-        CHECK_SIZE(event_size, event.enter);
+        CHECK_SIZE(event_size, sizeof(event.enter));
 
         // 將每個片段的 sys_enter_read_event 傳送到 user space
         CHECK_ERROR(bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU,
@@ -451,8 +452,7 @@ long read_path(char dst[MAX_ARG_LEN], struct path *path)
     struct dentry *mnt_root = NULL;
     BPF_CORE_READ_INTO(&mnt_root, path, mnt, mnt_root);
 
-    u32 index = MAX_ARG_LEN >> 1;
-    // char* begin = dst + MAX_ARG_LEN;
+    u32 index = MAX_ARG_LEN - MAX_NAME_LEN;
 
     // struct vfsmount *mnt = NULL;
     // BPF_CORE_READ_INTO(&mnt, path, mnt);
@@ -476,13 +476,13 @@ long read_path(char dst[MAX_ARG_LEN], struct path *path)
         CHECK_ERROR(BPF_CORE_READ_INTO(&len, dentry, d_name.len));
 
         index -= len;
-        index &= (MAX_ARG_LEN >> 1) - 1;
-        len   &= (MAX_ARG_LEN >> 1) - 1;
+        if (index > MAX_ARG_LEN - MAX_NAME_LEN) return -7; // E2BIG
+        if (len   >               MAX_NAME_LEN) return -7; // E2BIG
 
         bpf_core_read(dst + index, len, name);
 
         index--;
-        index &= (MAX_ARG_LEN >> 1) - 1;
+        if (index > MAX_ARG_LEN - MAX_NAME_LEN) return -7; // E2BIG
         dst[index] = '/';
 
         CHECK_ERROR(BPF_CORE_READ_INTO(&dentry, dentry, d_parent));
@@ -515,7 +515,7 @@ int BPF_KPROBE(kprobe__do_coredump, const kernel_siginfo_t *siginfo)
         struct path *path = NULL;
         CHECK_ERROR(BPF_CORE_READ_INTO(&path, vma, vm_file, f_path));
 
-        read_path(event.path, path);
+        CHECK_ERROR(read_path(event.path, path));
         
         struct vm_area_struct *new_vma = NULL;
         CHECK_ERROR(BPF_CORE_READ_INTO(&new_vma, vma, vm_next));
