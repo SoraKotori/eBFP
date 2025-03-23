@@ -442,6 +442,55 @@ int tracepoint__sched__sched_process_exit(struct trace_event_raw_sched_process_t
     return 0;
 }
 
+__attribute__((always_inline))
+long read_path(char dst[MAX_ARG_LEN], struct path *path)
+{
+    struct dentry *dentry = NULL;
+    BPF_CORE_READ_INTO(&dentry, path, dentry);
+
+    struct dentry *mnt_root = NULL;
+    BPF_CORE_READ_INTO(&mnt_root, path, mnt, mnt_root);
+
+    u32 index = MAX_ARG_LEN >> 1;
+    // char* begin = dst + MAX_ARG_LEN;
+
+    // struct vfsmount *mnt = NULL;
+    // BPF_CORE_READ_INTO(&mnt, path, mnt);
+
+    // struct mount *mount = container_of(mnt, struct mount, mnt);
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 3, 0)
+    #pragma unroll
+#endif
+    for (u32 i = 0; i < MAX_ARGS; i++)
+    {
+        if (dentry == mnt_root)
+        {
+            break;
+        }
+
+        char *name = NULL;
+        CHECK_ERROR(BPF_CORE_READ_INTO(&name, dentry, d_name.name));
+
+        u32 len = 0;
+        CHECK_ERROR(BPF_CORE_READ_INTO(&len, dentry, d_name.len));
+
+        index -= len;
+        index &= (MAX_ARG_LEN >> 1) - 1;
+        len   &= (MAX_ARG_LEN >> 1) - 1;
+
+        bpf_core_read(dst + index, len, name);
+
+        index--;
+        index &= (MAX_ARG_LEN >> 1) - 1;
+        dst[index] = '/';
+
+        CHECK_ERROR(BPF_CORE_READ_INTO(&dentry, dentry, d_parent));
+    }
+
+    return index;
+}
+
 SEC("kprobe/do_coredump")
 int BPF_KPROBE(kprobe__do_coredump, const kernel_siginfo_t *siginfo)
 {
@@ -463,11 +512,10 @@ int BPF_KPROBE(kprobe__do_coredump, const kernel_siginfo_t *siginfo)
 #endif
     for (__u32 i = 0; i < 8 && vma; i++)
     {
-        vma->vm_file;
+        struct path *path = NULL;
+        CHECK_ERROR(BPF_CORE_READ_INTO(&path, vma, vm_file, f_path));
 
-        CHECK_ERROR(BPF_CORE_READ_INTO(&event.vma[i].vm_start, vma, vm_start));
-        CHECK_ERROR(BPF_CORE_READ_INTO(&event.vma[i].vm_end,   vma, vm_end));
-        CHECK_ERROR(BPF_CORE_READ_INTO(&event.vma[i].vm_pgoff, vma, vm_pgoff));
+        read_path(event.path, path);
         
         struct vm_area_struct *new_vma = NULL;
         CHECK_ERROR(BPF_CORE_READ_INTO(&new_vma, vma, vm_next));
