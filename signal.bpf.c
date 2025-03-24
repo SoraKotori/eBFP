@@ -326,24 +326,36 @@ long read_path(char dst[MAX_ARG_LEN], struct path *path)
     struct dentry *dentry = NULL;
     BPF_CORE_READ_INTO(&dentry, path, dentry);
 
+    struct vfsmount *vfsmnt = NULL;
+    CHECK_ERROR(BPF_CORE_READ_INTO(&vfsmnt, path, mnt));
+
+    struct mount *mnt = container_of(vfsmnt, struct mount, mnt);
+
     struct dentry *mnt_root = NULL;
-    BPF_CORE_READ_INTO(&mnt_root, path, mnt, mnt_root);
+    CHECK_ERROR(BPF_CORE_READ_INTO(&mnt_root, mnt, mnt.mnt_root));
 
     u32 index = MAX_ARG_LEN - MAX_NAME_LEN;
     dst[index] = '\0';
-
-    // struct vfsmount *mnt = NULL;
-    // BPF_CORE_READ_INTO(&mnt, path, mnt);
-
-    // struct mount *mount = container_of(mnt, struct mount, mnt);
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 3, 0)
     #pragma unroll
 #endif
     for (u32 i = 0; i < MAX_ARGS; i++)
     {
+        struct dentry *d_parent = NULL;
+        CHECK_ERROR(BPF_CORE_READ_INTO(&d_parent, dentry, d_parent));
+
+        if (dentry == d_parent)
+        {
+            break;
+        }
+
         if (dentry == mnt_root)
         {
+            CHECK_ERROR(BPF_CORE_READ_INTO(&dentry, mnt, mnt_mountpoint));
+            // CHECK_ERROR(BPF_CORE_READ_INTO(&mnt, mnt, mnt_parent));
+            // CHECK_ERROR(BPF_CORE_READ_INTO(&mnt_root, mnt, mnt.mnt_root));
+            // continue;
             break;
         }
 
@@ -361,7 +373,7 @@ long read_path(char dst[MAX_ARG_LEN], struct path *path)
         dst[index] = '/';
         CHECK_ERROR(bpf_core_read(dst + index + 1, len, name));
 
-        CHECK_ERROR(BPF_CORE_READ_INTO(&dentry, dentry, d_parent));
+        dentry = d_parent;
     }
 
     return index;
@@ -535,7 +547,11 @@ int raw_tracepoint__sys_exit(struct bpf_raw_tracepoint_args *ctx)
         return 0;
 
     struct bpf_pidns_info nsdata;
-    CHECK_ERROR(bpf_get_ns_current_pid_tgid(self->dev, self->ino, &nsdata, sizeof(nsdata)));
+    long error = bpf_get_ns_current_pid_tgid(self->dev, self->ino, &nsdata, sizeof(nsdata));
+    if  (error == -22) // EINVAL (invalid argument)
+        return 0;
+    else
+        CHECK_ERROR(error);
 
     INIT_EVENT(event, sys_exit_event,
         .pid  = nsdata.pid,
