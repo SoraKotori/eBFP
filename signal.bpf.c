@@ -475,15 +475,13 @@ long read_path(char dst[MAX_ARG_LEN], struct path *path)
         u32 len = 0;
         CHECK_ERROR(BPF_CORE_READ_INTO(&len, dentry, d_name.len));
 
-        index -= len;
-        if (index > MAX_ARG_LEN - MAX_NAME_LEN) return -7; // E2BIG
-        if (len   >               MAX_NAME_LEN) return -7; // E2BIG
+        index -= len + 1;
 
-        bpf_core_read(dst + index, len, name);
+        if (index > MAX_ARG_LEN - MAX_NAME_LEN)     return -7; // E2BIG
+        if (len   >               MAX_NAME_LEN - 1) return -7; // E2BIG
 
-        index--;
-        if (index > MAX_ARG_LEN - MAX_NAME_LEN) return -7; // E2BIG
         dst[index] = '/';
+        CHECK_ERROR(bpf_core_read(dst + index + 1, len, name));
 
         CHECK_ERROR(BPF_CORE_READ_INTO(&dentry, dentry, d_parent));
     }
@@ -510,7 +508,7 @@ int BPF_KPROBE(kprobe__do_coredump, const kernel_siginfo_t *siginfo)
 #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 3, 0)
     #pragma unroll
 #endif
-    for (__u32 i = 0; i < 8 && vma; i++)
+    for (u32 i = 0; i < 8 && vma; i++)
     {
         struct path *path = NULL;
         CHECK_ERROR(BPF_CORE_READ_INTO(&path, vma, vm_file, f_path));

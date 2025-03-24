@@ -118,13 +118,14 @@ struct do_coredump_event
     int si_signo;
     int si_code;
     __u32 stack_id;
+    char path[MAX_ARG_LEN];
 
-    struct vm_area
-    {
-        unsigned long vm_start;
-        unsigned long vm_end;
-        unsigned long vm_pgoff;
-    } vma[MAX_ARG_LEN / sizeof(struct vm_area)];
+    // struct vm_area
+    // {
+    //     unsigned long vm_start;
+    //     unsigned long vm_end;
+    //     unsigned long vm_pgoff;
+    // } vma[MAX_ARG_LEN / sizeof(struct vm_area)];
 };
 
 struct sys_exit_event
