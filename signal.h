@@ -1,6 +1,7 @@
 #pragma onec
 
 #define MAX_ARG_LEN 256 // ebpf stack max 512 bytes
+#define MAX_NAME_LEN 64
 #define MAX_SYSCALL 8 // 512 divide 64
 
 #ifndef PERF_MAX_STACK_DEPTH
@@ -98,7 +99,7 @@ struct sys_exit_read_event
     int fd;
     int ret;
     __u16 i_mode;
-    __u32 size;
+    __u32 index;
     char name[MAX_ARG_LEN]; 
 };
 

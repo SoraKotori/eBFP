@@ -426,7 +426,8 @@ public:
             event->fd,
             permission,
             mode,
-            std::string_view(event->name, event->size));
+            std::string_view(event->name + event->index,
+                             event->name + MAX_ARG_LEN - MAX_NAME_LEN));
 
         if (event->ret >= 0)
         {
@@ -585,7 +586,7 @@ int main(int argc, char *argv[])
         return EXIT_FAILURE;
 
     int  error = 0;
-    bool disable_read = true;
+    bool disable_read = false;
     if  (disable_read)
     {
         if ((error = bpf_program__set_autoload(skeleton->progs.tracepoint__syscalls__sys_enter_read, false)) < 0)

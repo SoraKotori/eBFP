@@ -9,7 +9,6 @@
 
 #define MAX_ARGS 64
 #define MAX_PID_TGIDS 8192
-#define MAX_NAME_LEN 64
 
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
@@ -321,6 +320,53 @@ int tracepoint__syscalls__sys_enter_read(struct trace_event_raw_sys_enter *ctx)
     return 0;
 }
 
+__attribute__((always_inline))
+long read_path(char dst[MAX_ARG_LEN], struct path *path)
+{
+    struct dentry *dentry = NULL;
+    BPF_CORE_READ_INTO(&dentry, path, dentry);
+
+    struct dentry *mnt_root = NULL;
+    BPF_CORE_READ_INTO(&mnt_root, path, mnt, mnt_root);
+
+    u32 index = MAX_ARG_LEN - MAX_NAME_LEN;
+    dst[index] = '\0';
+
+    // struct vfsmount *mnt = NULL;
+    // BPF_CORE_READ_INTO(&mnt, path, mnt);
+
+    // struct mount *mount = container_of(mnt, struct mount, mnt);
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 3, 0)
+    #pragma unroll
+#endif
+    for (u32 i = 0; i < MAX_ARGS; i++)
+    {
+        if (dentry == mnt_root)
+        {
+            break;
+        }
+
+        char *name = NULL;
+        CHECK_ERROR(BPF_CORE_READ_INTO(&name, dentry, d_name.name));
+
+        u32 len = 0;
+        CHECK_ERROR(BPF_CORE_READ_INTO(&len, dentry, d_name.len));
+
+        index -= len + 1;
+
+        if (index > MAX_ARG_LEN - MAX_NAME_LEN)     return -7; // E2BIG
+        if (len   >               MAX_NAME_LEN - 1) return -7; // E2BIG
+
+        dst[index] = '/';
+        CHECK_ERROR(bpf_core_read(dst + index + 1, len, name));
+
+        CHECK_ERROR(BPF_CORE_READ_INTO(&dentry, dentry, d_parent));
+    }
+
+    return index;
+}
+
 SEC("tracepoint/syscalls/sys_exit_read")
 int tracepoint__syscalls__sys_exit_read(struct trace_event_raw_sys_exit *ctx)
 {
@@ -357,22 +403,16 @@ int tracepoint__syscalls__sys_exit_read(struct trace_event_raw_sys_exit *ctx)
     CHECK_ERROR(BPF_CORE_READ_INTO(&fd, task, files, fdt, fd));
 
     // 依照檔案描述符的索引，從 fd 陣列中讀取對應的 file 結構指標
-    struct file *f = NULL;
-    CHECK_ERROR(bpf_probe_read_kernel(&f, sizeof(f), fd + read_argument.fd));
+    struct file *file = NULL;
+    CHECK_ERROR(bpf_probe_read_kernel(&file, sizeof(file), fd + read_argument.fd));
 
-    // 讀取 file 結構中 inode 的 i_mode 欄位，儲存到 sys_exit_read_event 結構中
-    CHECK_ERROR(BPF_CORE_READ_INTO(&event.exit.i_mode, f, f_path.dentry, d_inode, i_mode));
+    // 讀取 file 結構中 f_path 欄位
+    struct path *path = __builtin_preserve_access_index(&file->f_path);
 
-    // 讀取 dentry 結構中的 d_name 資訊（檔案名稱資訊）
-    struct qstr d_name = {};
-    CHECK_ERROR(BPF_CORE_READ_INTO(&d_name, f, f_path.dentry, d_name));
+    // 讀取 f_path 結構中 inode 的 i_mode 欄位，儲存到 sys_exit_read_event 結構中
+    CHECK_ERROR(BPF_CORE_READ_INTO(&event.exit.i_mode, path, dentry, d_inode, i_mode));
 
-    // 設定事件中的 size 欄位為 d_name 的長度
-    event.exit.size = d_name.len;
-    CHECK_SIZE(event.exit.size, sizeof(event.exit.name));
-
-    // 從 kernel 空間讀取檔案名稱，存入 event.exit.name 陣列中
-    CHECK_ERROR(bpf_probe_read_kernel(event.exit.name, event.exit.size, d_name.name));
+    event.exit.index = CHECK_ERROR(read_path(event.exit.name, path));
 
     // 將 sys_exit_read_event 傳送到 user space
     CHECK_ERROR(bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU,
@@ -443,52 +483,6 @@ int tracepoint__sched__sched_process_exit(struct trace_event_raw_sched_process_t
     return 0;
 }
 
-__attribute__((always_inline))
-long read_path(char dst[MAX_ARG_LEN], struct path *path)
-{
-    struct dentry *dentry = NULL;
-    BPF_CORE_READ_INTO(&dentry, path, dentry);
-
-    struct dentry *mnt_root = NULL;
-    BPF_CORE_READ_INTO(&mnt_root, path, mnt, mnt_root);
-
-    u32 index = MAX_ARG_LEN - MAX_NAME_LEN;
-
-    // struct vfsmount *mnt = NULL;
-    // BPF_CORE_READ_INTO(&mnt, path, mnt);
-
-    // struct mount *mount = container_of(mnt, struct mount, mnt);
-
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 3, 0)
-    #pragma unroll
-#endif
-    for (u32 i = 0; i < MAX_ARGS; i++)
-    {
-        if (dentry == mnt_root)
-        {
-            break;
-        }
-
-        char *name = NULL;
-        CHECK_ERROR(BPF_CORE_READ_INTO(&name, dentry, d_name.name));
-
-        u32 len = 0;
-        CHECK_ERROR(BPF_CORE_READ_INTO(&len, dentry, d_name.len));
-
-        index -= len + 1;
-
-        if (index > MAX_ARG_LEN - MAX_NAME_LEN)     return -7; // E2BIG
-        if (len   >               MAX_NAME_LEN - 1) return -7; // E2BIG
-
-        dst[index] = '/';
-        CHECK_ERROR(bpf_core_read(dst + index + 1, len, name));
-
-        CHECK_ERROR(BPF_CORE_READ_INTO(&dentry, dentry, d_parent));
-    }
-
-    return index;
-}
-
 SEC("kprobe/do_coredump")
 int BPF_KPROBE(kprobe__do_coredump, const kernel_siginfo_t *siginfo)
 {
@@ -510,8 +504,11 @@ int BPF_KPROBE(kprobe__do_coredump, const kernel_siginfo_t *siginfo)
 #endif
     for (u32 i = 0; i < 8 && vma; i++)
     {
-        struct path *path = NULL;
-        CHECK_ERROR(BPF_CORE_READ_INTO(&path, vma, vm_file, f_path));
+        struct file *file = NULL;
+        CHECK_ERROR(BPF_CORE_READ_INTO(&file, vma, vm_file));
+
+        // 讀取 file 結構中 f_path 欄位
+        struct path *path = __builtin_preserve_access_index(&file->f_path);
 
         CHECK_ERROR(read_path(event.path, path));
         
