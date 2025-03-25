@@ -7,7 +7,7 @@
 
 #include "signal.h"
 
-#define MAX_ARGS 64
+#define MAX_ARGS 32
 #define MAX_PID_TGIDS 8192
 
 struct {
@@ -58,6 +58,13 @@ struct read_argument
     void* buf;
     size_t count;
 };
+
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, u32);
+    __type(value, u32);
+} read_content SEC(".maps");
 
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
@@ -159,8 +166,8 @@ int tracepoint__syscalls__sys_enter_execve(struct trace_event_raw_sys_enter *ctx
     );
 
     // 從 map 中取得欲比對的 pattern
-    __u32 key = 0;
-    char* pattern = CHECK_PTR(bpf_map_lookup_elem(&command_pattern, &key));
+    const u32 zero = 0;
+    char *pattern = CHECK_PTR(bpf_map_lookup_elem(&command_pattern, &zero));
     if  (!pattern)
         return 0;
 
@@ -202,7 +209,7 @@ int tracepoint__syscalls__sys_enter_execve(struct trace_event_raw_sys_enter *ctx
     #pragma unroll
 #endif
     // 逐一讀取參數，最多讀到 MAX_ARGS 為止
-    for (int i = 1; i < MAX_ARGS; i++) 
+    for (u32 i = 1; i < MAX_ARGS; i++) 
     {
         // 從 user space 讀取 argv[i] 中的字串指標
         CHECK_ERROR(bpf_probe_read_user(&argv_i, sizeof(argv_i), argv + event.i));
@@ -228,8 +235,8 @@ output:
         ctx, &events, BPF_F_CURRENT_CPU, &event,
         offsetof(struct sys_enter_execve_event, argv_i_size) + sizeof(event.argv_i_size)));
 
-    int value = 0;
-    CHECK_ERROR(bpf_map_update_elem(&execve_map, &event.pid_tgid, &value, BPF_ANY));
+    // 標記此 pid_tgid 在 enter execve 時處理過，value 只作為必要參數傳入
+    CHECK_ERROR(bpf_map_update_elem(&execve_map, &event.pid_tgid, &zero, BPF_ANY));
     
     return 0;
 }
@@ -242,7 +249,7 @@ int tracepoint__syscalls__sys_exit_execve(struct trace_event_raw_sys_exit *ctx)
         .ret      = ctx->ret
     );
 
-    int* execve_ptr = bpf_map_lookup_elem(&execve_map, &event.pid_tgid);
+    int *execve_ptr = bpf_map_lookup_elem(&execve_map, &event.pid_tgid);
     if (!execve_ptr)
         return 0;
 
@@ -287,7 +294,7 @@ int tracepoint__syscalls__sys_exit_kill(struct trace_event_raw_sys_exit *ctx)
         .ret      = ctx->ret
     );
 
-    int* signal_ptr = bpf_map_lookup_elem(&kill_map, &event.pid_tgid);
+    int *signal_ptr = bpf_map_lookup_elem(&kill_map, &event.pid_tgid);
     if (!signal_ptr)
         return 0;
 
@@ -304,7 +311,7 @@ int tracepoint__syscalls__sys_enter_read(struct trace_event_raw_sys_enter *ctx)
 {
     __u64 pid_tgid = bpf_get_current_pid_tgid();
 
-    int* execve_ptr = bpf_map_lookup_elem(&execve_map, &pid_tgid);
+    int *execve_ptr = bpf_map_lookup_elem(&execve_map, &pid_tgid);
     if (!execve_ptr)
         return 0;
 
@@ -324,15 +331,15 @@ __attribute__((always_inline))
 long read_path(char dst[MAX_ARG_LEN], struct path *path)
 {
     struct dentry *dentry = NULL;
-    BPF_CORE_READ_INTO(&dentry, path, dentry);
+    CHECK_ERROR(BPF_CORE_READ_INTO(&dentry, path, dentry));
+
+    struct dentry *mnt_root = NULL;
+    CHECK_ERROR(BPF_CORE_READ_INTO(&mnt_root, path, mnt, mnt_root));
 
     struct vfsmount *vfsmnt = NULL;
     CHECK_ERROR(BPF_CORE_READ_INTO(&vfsmnt, path, mnt));
 
     struct mount *mnt = container_of(vfsmnt, struct mount, mnt);
-
-    struct dentry *mnt_root = NULL;
-    CHECK_ERROR(BPF_CORE_READ_INTO(&mnt_root, mnt, mnt.mnt_root));
 
     u32 index = MAX_ARG_LEN - MAX_NAME_LEN;
     dst[index] = '\0';
@@ -342,22 +349,27 @@ long read_path(char dst[MAX_ARG_LEN], struct path *path)
 #endif
     for (u32 i = 0; i < MAX_ARGS; i++)
     {
+        if (dentry == mnt_root)
+        {
+            struct mount *mnt_parent = NULL;
+            CHECK_ERROR(BPF_CORE_READ_INTO(&mnt_parent, mnt, mnt_parent));
+        
+            if (mnt == mnt_parent)
+                break;
+
+            CHECK_ERROR(BPF_CORE_READ_INTO(&dentry, mnt, mnt_mountpoint));
+            CHECK_ERROR(BPF_CORE_READ_INTO(&mnt_root, mnt_parent, mnt.mnt_root));
+            mnt = mnt_parent;
+
+            continue;
+        }
+
         struct dentry *d_parent = NULL;
         CHECK_ERROR(BPF_CORE_READ_INTO(&d_parent, dentry, d_parent));
 
+        // 在特殊的檔案系統中，如匿名 pipe 並不會經過 mnt_root，而會直接達到自身的 root
         if (dentry == d_parent)
-        {
             break;
-        }
-
-        if (dentry == mnt_root)
-        {
-            CHECK_ERROR(BPF_CORE_READ_INTO(&dentry, mnt, mnt_mountpoint));
-            // CHECK_ERROR(BPF_CORE_READ_INTO(&mnt, mnt, mnt_parent));
-            // CHECK_ERROR(BPF_CORE_READ_INTO(&mnt_root, mnt, mnt.mnt_root));
-            // continue;
-            break;
-        }
 
         char *name = NULL;
         CHECK_ERROR(BPF_CORE_READ_INTO(&name, dentry, d_name.name));
@@ -392,7 +404,7 @@ int tracepoint__syscalls__sys_exit_read(struct trace_event_raw_sys_exit *ctx)
     event.exit.pid_tgid = bpf_get_current_pid_tgid();
 
     // 透過 pid_tgid 從 read_map 中查找對應的 read_argument 結構，如果不存在則不是要監視的 read 事件
-    struct read_argument* read_ptr = bpf_map_lookup_elem(&read_map, &event.exit.pid_tgid);
+    struct read_argument *read_ptr = bpf_map_lookup_elem(&read_map, &event.exit.pid_tgid);
     if (!read_ptr)
         return 0;
 
@@ -430,16 +442,21 @@ int tracepoint__syscalls__sys_exit_read(struct trace_event_raw_sys_exit *ctx)
     CHECK_ERROR(bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU,
                                       &event.exit, sizeof(event.exit)));
 
-    if (event.exit.ret <= 0)
-        return 0;
-
-    // 若 ret 為正數，代表有讀取到資料，則轉型成 unsigned 來通過驗證器，避免為負數
-    __u32 ret = (__u32)event.exit.ret;
-
     // ------------------------------------------------------------
     // 以下為另一個事件：將 sys_enter_read_event 拆成多個片段回傳
     // 每個片段包含部分讀取到的使用者資料（透過 bpf_probe_read_user）
     // ------------------------------------------------------------
+
+    const u32 zero = 0;
+    u32 *context = CHECK_PTR(bpf_map_lookup_elem(&read_content, &zero));
+    if (!context)
+        return 0;
+
+    if (*context == false || event.exit.ret <= 0)
+        return 0;
+
+    // 若 ret 為正數，代表有讀取到資料，則轉型成 unsigned 來通過驗證器，避免為負數
+    u32 ret = (u32)event.exit.ret;    
 
     // 初始化並填入 sys_enter_read_event 結構
     event.enter.base.event_id = EVENT_ID(sys_enter_read_event);
@@ -448,7 +465,7 @@ int tracepoint__syscalls__sys_exit_read(struct trace_event_raw_sys_exit *ctx)
 #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 3, 0)
     #pragma unroll
 #endif
-    for (__u32 i = 0; i < MAX_ARGS; i++)
+    for (u32 i = 0; i < MAX_ARGS; i++)
     {
         event.enter.index = i * MAX_ARG_LEN;
 
@@ -541,8 +558,8 @@ int BPF_KPROBE(kprobe__do_coredump, const kernel_siginfo_t *siginfo)
 SEC("raw_tracepoint/sys_exit")
 int raw_tracepoint__sys_exit(struct bpf_raw_tracepoint_args *ctx)
 {
-    u32 key = 0;
-    struct self_t *self = CHECK_PTR(bpf_map_lookup_elem(&self_map, &key));
+    const u32 zero = 0;
+    struct self_t *self = CHECK_PTR(bpf_map_lookup_elem(&self_map, &zero));
     if (!self)
         return 0;
 
@@ -567,7 +584,7 @@ int raw_tracepoint__sys_exit(struct bpf_raw_tracepoint_args *ctx)
 
     u64 *ret_map = CHECK_PTR(bpf_map_lookup_elem(event.ret < 0 ? (void*)&negative_ret_map
                                                                : (void*)&positive_ret_map,
-                                                 &key));
+                                                 &zero));
     if (!ret_map)
         return 0;
 

@@ -599,13 +599,19 @@ int main(int argc, char *argv[])
     if ((error = signal_bpf::load(skeleton.get())) < 0)
         return EXIT_FAILURE;
 
-    __u32 key = 0;
+    __u32 zero = 0;
     char pattern[MAX_ARG_LEN] = "";
 
     // update pattern to bpf map
     if ((error = bpf_map__update_elem(skeleton->maps.command_pattern,
-                                      &key, sizeof(key),
+                                      &zero, sizeof(zero),
                                       pattern, sizeof(pattern), BPF_ANY)) < 0)
+        return EXIT_FAILURE;
+
+    // update read_content flag to bpf map
+    if ((error = bpf_map__update_elem(skeleton->maps.read_content,
+                                      &zero, sizeof(zero),
+                                      &zero, sizeof(zero), BPF_ANY)) < 0)
         return EXIT_FAILURE;
 
     struct stat st{};
@@ -622,7 +628,7 @@ int main(int argc, char *argv[])
 
     // update self to bpf map
     if ((error = bpf_map__update_elem(skeleton->maps.self_map,
-                                      &key, sizeof(key),
+                                      &zero, sizeof(zero),
                                       &self, sizeof(self), BPF_ANY)) < 0)
         return EXIT_FAILURE;
 
@@ -633,7 +639,7 @@ int main(int argc, char *argv[])
 
     // update negative_ret to bpf map
     if ((error = bpf_map__update_elem(skeleton->maps.negative_ret_map,
-                                      &key, sizeof(key),
+                                      &zero, sizeof(zero),
                                       std::data(negative_ret), sizeof(negative_ret), BPF_ANY)) < 0)
         return EXIT_FAILURE;
 
