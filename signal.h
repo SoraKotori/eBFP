@@ -15,6 +15,8 @@
     MAKE_EVENT_ID(sys_exit_kill_event) \
     MAKE_EVENT_ID(sys_enter_read_event) \
     MAKE_EVENT_ID(sys_exit_read_event) \
+    MAKE_EVENT_ID(path_event) \
+    MAKE_EVENT_ID(area_event) \
     MAKE_EVENT_ID(sched_process_exit_event) \
     MAKE_EVENT_ID(do_coredump_event) \
     MAKE_EVENT_ID(sys_exit_event)
@@ -103,6 +105,28 @@ struct sys_exit_read_event
     char name[MAX_ARG_LEN]; 
 };
 
+struct path_event
+{
+    struct event_base base;
+
+    PID_TGID_UNION;
+    char path[MAX_ARG_LEN];
+};
+
+struct area_event
+{
+    struct event_base base;
+
+    PID_TGID_UNION;
+    struct vm_area
+    {
+        unsigned long vm_start;
+        unsigned long vm_end;
+        unsigned long vm_pgoff;
+        unsigned long dentry;
+    } area[8];
+};
+
 struct sched_process_exit_event
 {
     struct event_base base;
@@ -119,14 +143,6 @@ struct do_coredump_event
     int si_signo;
     int si_code;
     __u32 stack_id;
-    char path[MAX_ARG_LEN];
-
-    // struct vm_area
-    // {
-    //     unsigned long vm_start;
-    //     unsigned long vm_end;
-    //     unsigned long vm_pgoff;
-    // } vma[MAX_ARG_LEN / sizeof(struct vm_area)];
 };
 
 struct sys_exit_event

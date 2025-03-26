@@ -8,7 +8,7 @@
 #include "signal.h"
 
 #define MAX_ARGS 32
-#define MAX_PID_TGIDS 8192
+#define MAX_ENTRIES 8192
 
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
@@ -40,14 +40,14 @@ struct {
 
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, MAX_PID_TGIDS);
+    __uint(max_entries, MAX_ENTRIES);
     __type(key, u64);
     __type(value, int);
 } execve_map SEC(".maps");
 
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, MAX_PID_TGIDS);
+    __uint(max_entries, MAX_ENTRIES);
     __type(key, u64);
     __type(value, int);
 } kill_map SEC(".maps");
@@ -68,17 +68,32 @@ struct {
 
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, MAX_PID_TGIDS);
+    __uint(max_entries, MAX_ENTRIES);
     __type(key, u64);
     __type(value, struct read_argument);
 } read_map SEC(".maps");
 
 struct {
     __uint(type, BPF_MAP_TYPE_STACK_TRACE);
-    __uint(max_entries, MAX_PID_TGIDS);
+    __uint(max_entries, MAX_ENTRIES);
     __type(key, u32);
     __type(value, u64[PERF_MAX_STACK_DEPTH]);
+    // __uint(sample_flags, BPF_F_STACK_BUILD_ID);
 } stack_trace SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, MAX_ENTRIES);
+    __type(key, struct path);
+    __type(value, u32);
+} path_map SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(max_entries, MAX_ARGS);
+    __type(key, u32);
+    __type(value, struct path);
+} path_percpu SEC(".maps");
 
 struct {
     __uint(type, BPF_MAP_TYPE_PERF_EVENT_ARRAY);
@@ -258,8 +273,8 @@ int tracepoint__syscalls__sys_exit_execve(struct trace_event_raw_sys_exit *ctx)
 
     event.ktime = bpf_ktime_get_ns();
 
-    CHECK_ERROR(bpf_perf_event_output(
-        ctx, &events, BPF_F_CURRENT_CPU, &event, sizeof(event)));
+    CHECK_ERROR(bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU,
+                                      &event, sizeof(event)));
 
     return 0;
 }
@@ -280,8 +295,8 @@ int tracepoint__syscalls__sys_enter_kill(struct trace_event_raw_sys_enter *ctx)
     // 更新 singal 作為 sys_exit_kill 的判斷條件
     CHECK_ERROR(bpf_map_update_elem(&kill_map, &event.pid_tgid, &event.signal, BPF_ANY));
     
-    CHECK_ERROR(bpf_perf_event_output(
-        ctx, &events, BPF_F_CURRENT_CPU, &event, sizeof(event)));
+    CHECK_ERROR(bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU,
+                                      &event, sizeof(event)));
 
     return 0;
 }
@@ -300,8 +315,8 @@ int tracepoint__syscalls__sys_exit_kill(struct trace_event_raw_sys_exit *ctx)
 
     CHECK_ERROR(bpf_map_delete_elem(&kill_map, &event.pid_tgid));
     
-    CHECK_ERROR(bpf_perf_event_output(
-        ctx, &events, BPF_F_CURRENT_CPU, &event, sizeof(event)));
+    CHECK_ERROR(bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU,
+                                      &event, sizeof(event)));
 
     return 0;
 }
@@ -327,7 +342,7 @@ int tracepoint__syscalls__sys_enter_read(struct trace_event_raw_sys_enter *ctx)
     return 0;
 }
 
-__attribute__((always_inline))
+__always_inline
 long read_path(char dst[MAX_ARG_LEN], struct path *path)
 {
     struct dentry *dentry = NULL;
@@ -506,27 +521,20 @@ int tracepoint__sched__sched_process_exit(struct trace_event_raw_sched_process_t
 
     CHECK_ERROR(BPF_CORE_READ_INTO(&event.exit_code, task, exit_code));
 
-    CHECK_ERROR(bpf_perf_event_output(
-        ctx, &events, BPF_F_CURRENT_CPU, &event, sizeof(event)));
+    CHECK_ERROR(bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU,
+                                      &event, sizeof(event)));
 
     return 0;
 }
 
-SEC("kprobe/do_coredump")
-int BPF_KPROBE(kprobe__do_coredump, const kernel_siginfo_t *siginfo)
+__always_inline
+long area_output(void *ctx,
+                struct vm_area_struct** const vma_ptr, /* in/out */
+                struct area_event* const event,        /* in/out */
+                u32* const dentry_i,                   /* in/out */
+                u64* const dentry_prev)                /* in/out */
 {
-    // 取得 user-space stack
-    long stack_id = CHECK_ERROR(bpf_get_stackid(ctx, &stack_trace, BPF_F_USER_STACK));
-
-    INIT_EVENT(event, do_coredump_event,
-        .pid_tgid = bpf_get_current_pid_tgid(),
-        .stack_id = stack_id
-    );
-
-    struct task_struct *task = (struct task_struct *)CHECK_PTR(bpf_get_current_task());
-
-    struct vm_area_struct *vma = NULL;
-    CHECK_ERROR(BPF_CORE_READ_INTO(&vma, task, mm, mmap));
+    struct vm_area_struct *vma = *vma_ptr;
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 3, 0)
     #pragma unroll
@@ -536,22 +544,110 @@ int BPF_KPROBE(kprobe__do_coredump, const kernel_siginfo_t *siginfo)
         struct file *file = NULL;
         CHECK_ERROR(BPF_CORE_READ_INTO(&file, vma, vm_file));
 
-        // 讀取 file 結構中 f_path 欄位
-        struct path *path = __builtin_preserve_access_index(&file->f_path);
+        if (file)
+        {
+            struct path path;
+            CHECK_ERROR(BPF_CORE_READ_INTO(&path, file, f_path));
+            CHECK_ERROR(BPF_CORE_READ_INTO(&event->area[i].vm_pgoff, vma, vm_pgoff));
+            event->area[i].dentry = (unsigned long)path.dentry;
 
-        CHECK_ERROR(read_path(event.path, path));
-        
-        struct vm_area_struct *new_vma = NULL;
-        CHECK_ERROR(BPF_CORE_READ_INTO(&new_vma, vma, vm_next));
-        vma = new_vma;
+            if (*dentry_prev != event->area[i].dentry)
+            {
+                CHECK_ERROR(bpf_map_update_elem(&path_percpu, dentry_i, &path, BPF_ANY));
+
+                *dentry_prev  = event->area[i].dentry;
+                (*dentry_i)++;
+            }
+        }
+        else
+        {
+            event->area[i].vm_pgoff = 0;
+            event->area[i].dentry   = 0;
+        }
+
+        CHECK_ERROR(BPF_CORE_READ_INTO(&event->area[i].vm_start, vma, vm_start));
+        CHECK_ERROR(BPF_CORE_READ_INTO(&event->area[i].vm_end,   vma, vm_end));
+        CHECK_ERROR(BPF_CORE_READ_INTO(&vma,                     vma, vm_next));
     }
 
-    CHECK_ERROR(BPF_CORE_READ_INTO(&event.si_signo, siginfo, si_signo));
-    CHECK_ERROR(BPF_CORE_READ_INTO(&event.si_code,  siginfo, si_code));
+    CHECK_ERROR(bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU,
+                                      event, sizeof(*event)));
 
-    CHECK_ERROR(bpf_perf_event_output(
-        ctx, &events, BPF_F_CURRENT_CPU, &event, sizeof(event)));
+    *vma_ptr = vma;
+    return 0;
+}
 
+SEC("kprobe/do_coredump")
+int BPF_KPROBE(kprobe__do_coredump, const kernel_siginfo_t *siginfo)
+{
+    union
+    {
+        struct do_coredump_event coredump;
+        struct area_event        area;
+        struct path_event        path;
+    } event;
+
+    event.area.base.event_id = EVENT_ID(area_event);
+    event.area.pid_tgid      = bpf_get_current_pid_tgid();
+
+    u32 dentry_i = 0;
+    u64 dentry_prev = 0;
+
+    struct task_struct *task = (struct task_struct *)CHECK_PTR(bpf_get_current_task());
+
+    struct vm_area_struct *vma = NULL;
+    CHECK_ERROR(BPF_CORE_READ_INTO(&vma, task, mm, mmap));
+
+    CHECK_ERROR(area_output(ctx, &vma, &event.area, &dentry_i, &dentry_prev));
+    CHECK_ERROR(area_output(ctx, &vma, &event.area, &dentry_i, &dentry_prev));
+    CHECK_ERROR(area_output(ctx, &vma, &event.area, &dentry_i, &dentry_prev));
+    CHECK_ERROR(area_output(ctx, &vma, &event.area, &dentry_i, &dentry_prev));
+    CHECK_ERROR(area_output(ctx, &vma, &event.area, &dentry_i, &dentry_prev));
+    CHECK_ERROR(area_output(ctx, &vma, &event.area, &dentry_i, &dentry_prev));
+    CHECK_ERROR(area_output(ctx, &vma, &event.area, &dentry_i, &dentry_prev));
+    CHECK_ERROR(area_output(ctx, &vma, &event.area, &dentry_i, &dentry_prev));
+
+    event.path.base.event_id = EVENT_ID(path_event);
+    event.path.pid_tgid      = bpf_get_current_pid_tgid();
+
+//     u32 index = 0;
+
+// #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 3, 0)
+//     #pragma unroll
+// #endif
+//     for (u32 i = 0; i < MAX_ARGS; i++)
+//     {
+//         if (index == dentry_i)
+//             break;
+
+//         struct path *path = CHECK_PTR(bpf_map_lookup_elem(&path_percpu, &index));
+//         if (!path)
+//             return 0;
+
+//         u32 *flag = CHECK_PTR(bpf_map_lookup_elem(&path_map, path));
+//         if (!flag)
+//         {
+//             CHECK_ERROR(read_path(event.path.path, path));
+
+//             CHECK_ERROR(bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU,
+//                                               &event.path, sizeof(event.path)));
+    
+//             u32 zero = 0;
+//             CHECK_ERROR(bpf_map_update_elem(&path_map, path, &zero, BPF_ANY));
+//         }
+
+//         index++;
+//     }
+
+    event.coredump.base.event_id = EVENT_ID(do_coredump_event);
+    event.coredump.pid_tgid      = bpf_get_current_pid_tgid();
+    event.coredump.stack_id      = CHECK_ERROR(bpf_get_stackid(ctx, &stack_trace, BPF_F_USER_STACK));
+
+    CHECK_ERROR(BPF_CORE_READ_INTO(&event.coredump.si_signo, siginfo, si_signo));
+    CHECK_ERROR(BPF_CORE_READ_INTO(&event.coredump.si_code,  siginfo, si_code));
+
+    CHECK_ERROR(bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU,
+                                      &event.coredump, sizeof(event.coredump)));
     return 0;
 }
 
@@ -595,7 +691,9 @@ int raw_tracepoint__sys_exit(struct bpf_raw_tracepoint_args *ctx)
         ret_map[syscell_idx] & syscell_bit)
     {
         event.stack_id = CHECK_ERROR(bpf_get_stackid(ctx, &stack_trace, BPF_F_USER_STACK));
-        CHECK_ERROR(bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU, &event, sizeof(event)));
+
+        CHECK_ERROR(bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU,
+                                          &event, sizeof(event)));
     }
 
     return 0;
