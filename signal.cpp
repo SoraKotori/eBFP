@@ -452,8 +452,12 @@ public:
 
         auto& areas = map_[event->pid_tgid];
 
-        if (ktime_map_[cpu] != event->ktime)
+        if (auto& ktime = ktime_map_[cpu];
+            ktime != event->ktime)
+        {
+            ktime  = event->ktime;
             areas.clear();
+        }
 
         for (auto& area : event->area)
         {
@@ -463,6 +467,14 @@ public:
                     event->tgid,
                     event->pid,
                     areas.size());
+
+                for (const auto& entry : areas)
+                {
+                    std::println("    {:#018x} {:#018x} {:#010x}",
+                    entry.vm_start,
+                    entry.vm_end,
+                    entry.vm_pgoff * 4096);
+                }
                 break;
             }
             
@@ -621,7 +633,7 @@ int main(int argc, char *argv[])
         return EXIT_FAILURE;
 
     int  error = 0;
-    bool disable_read = false;
+    bool disable_read = true;
     if  (disable_read)
     {
         if ((error = bpf_program__set_autoload(skeleton->progs.tracepoint__syscalls__sys_enter_read, false)) < 0)

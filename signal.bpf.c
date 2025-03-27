@@ -667,34 +667,53 @@ int raw_tracepoint__sys_exit(struct bpf_raw_tracepoint_args *ctx)
     else
         CHECK_ERROR(error);
 
-    INIT_EVENT(event, sys_exit_event,
-        .pid  = nsdata.pid,
-        .tgid = nsdata.tgid
-    );
+    union
+    {
+        struct sys_exit_event exit;
+        struct vm_area_event  area;
+        struct path_event     path;
+    } event;
+    
+    event.exit.base.event_id = EVENT_ID(sys_exit_event);
+    event.exit.pid           = nsdata.pid;
+    event.exit.tgid          = nsdata.tgid;
 
-    if (self->pid_tgid == event.pid_tgid)
+    if (self->pid_tgid == event.exit.pid_tgid)
         return 0;
 
     struct pt_regs *regs = (struct pt_regs *)ctx->args[0];
-    CHECK_ERROR(BPF_CORE_READ_INTO(&event.syscall_nr, regs, orig_ax));
-    CHECK_ERROR(BPF_CORE_READ_INTO(&event.ret,        regs, ax));
+    CHECK_ERROR(BPF_CORE_READ_INTO(&event.exit.syscall_nr, regs, orig_ax));
+    CHECK_ERROR(BPF_CORE_READ_INTO(&event.exit.ret,        regs, ax));
 
-    u64 *ret_map = CHECK_PTR(bpf_map_lookup_elem(event.ret < 0 ? (void*)&negative_ret_map
-                                                               : (void*)&positive_ret_map,
+    u64 *ret_map = CHECK_PTR(bpf_map_lookup_elem(event.exit.ret < 0 ? (void*)&negative_ret_map
+                                                                    : (void*)&positive_ret_map,
                                                  &zero));
     if (!ret_map)
         return 0;
 
-    u64 syscell_idx =      event.syscall_nr / (sizeof(u64) * 8 /* bits */);
-    u64 syscell_bit = 1 << event.syscall_nr % (sizeof(u64) * 8 /* bits */);
+    u64 syscell_idx =      event.exit.syscall_nr / (sizeof(u64) * 8 /* bits */);
+    u64 syscell_bit = 1 << event.exit.syscall_nr % (sizeof(u64) * 8 /* bits */);
     
     if (syscell_idx < MAX_SYSCALL &&
         ret_map[syscell_idx] & syscell_bit)
     {
-        event.stack_id = CHECK_ERROR(bpf_get_stackid(ctx, &stack_trace, BPF_F_USER_STACK));
+        event.exit.stack_id = CHECK_ERROR(bpf_get_stackid(ctx, &stack_trace, BPF_F_USER_STACK));
 
         CHECK_ERROR(bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU,
-                                          &event, sizeof(event)));
+                                          &event.exit, sizeof(event.exit)));
+
+
+
+        event.area.base.event_id = EVENT_ID(vm_area_event);
+        event.area.pid           = nsdata.pid;
+        event.area.tgid          = nsdata.tgid;
+        event.area.ktime         = bpf_ktime_get_ns();
+    
+        struct task_struct *task = (struct task_struct *)CHECK_PTR(bpf_get_current_task());
+    
+        struct vm_area_struct *vma = NULL;
+        CHECK_ERROR(BPF_CORE_READ_INTO(&vma, task, mm, mmap));
+        CHECK_ERROR(vm_area_output(ctx, &event.area, vma));
     }
 
     return 0;
