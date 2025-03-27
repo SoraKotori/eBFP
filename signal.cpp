@@ -436,6 +436,35 @@ public:
     }
 };
 
+class vm_area_handler
+{
+    std::unordered_map<__u64, std::vector<vm_area_event::vm_area>>& map_;
+    std::unordered_map<int, __u64> ktime_map_;
+
+public:
+    vm_area_handler(decltype(map_) map) :
+        map_{map}
+    {}
+
+    void operator()(int cpu, void *data, __u32 size)
+    {
+        auto event = static_cast<vm_area_event*>(data);
+
+        auto& areas = map_[event->pid_tgid];
+
+        if (ktime_map_[cpu] != event->ktime)
+            areas.clear();
+
+        for (auto& area : event->area)
+        {
+            if (area.vm_start == 0)
+                break;
+            
+            areas.emplace_back(area);
+        }
+    }
+};
+
 void handle_sched_process_exit(int cpu, void *data, __u32 size)
 {
     auto event = static_cast<sched_process_exit_event*>(data);
@@ -689,6 +718,7 @@ int main(int argc, char *argv[])
     std::unordered_map<__u64, execve_argument> execve_map;
     std::unordered_map<__u64, kill_argument> kill_map;
     std::unordered_map<__u64, read_argument> read_map;
+    std::unordered_map<__u64, std::vector<vm_area_event::vm_area>> vm_area_map;
     
     event_handler<EVENT_MAX> handler;
     handler[EVENT_ID(sys_enter_execve_event)]   = sys_enter_execve_handler{execve_map};
@@ -697,6 +727,7 @@ int main(int argc, char *argv[])
     handler[EVENT_ID(sys_exit_kill_event)]      = sys_exit_kill_handler{kill_map};
     handler[EVENT_ID(sys_enter_read_event)]     = sys_enter_read_handler{read_map};
     handler[EVENT_ID(sys_exit_read_event)]      = sys_exit_read_handler{read_map};
+    handler[EVENT_ID(vm_area_event)]            = vm_area_handler{vm_area_map};
     handler[EVENT_ID(sched_process_exit_event)] = handle_sched_process_exit;
     handler[EVENT_ID(do_coredump_event)]        = do_coredump_handler{symbolizer.get(), skeleton->maps.stack_trace};
     handler[EVENT_ID(sys_exit_event)]           = sys_exit_handler{normalizer.get(), symbolizer.get(), skeleton->maps.stack_trace};

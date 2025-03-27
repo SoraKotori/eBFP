@@ -528,52 +528,61 @@ int tracepoint__sched__sched_process_exit(struct trace_event_raw_sched_process_t
 }
 
 __always_inline
-long area_output(void *ctx,
-                struct vm_area_struct** const vma_ptr, /* in/out */
-                struct area_event* const event,        /* in/out */
-                u32* const dentry_i,                   /* in/out */
-                u64* const dentry_prev)                /* in/out */
+long vm_area_output(void *ctx,
+                    struct vm_area_struct** const vma_ptr, /* in/out */
+                    struct vm_area_event* const event,     /* in/out */
+                    u32* const dentry_i,                   /* in/out */
+                    u64* const dentry_prev)                /* in/out */
 {
-    struct vm_area_struct *vma = *vma_ptr;
+    struct file *file = NULL;
+    struct path path;
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 3, 0)
     #pragma unroll
 #endif
-    for (u32 i = 0; i < 8 && vma; i++)
+    for (u32 i = 0; i < 159; i++)
     {
-        struct file *file = NULL;
-        CHECK_ERROR(BPF_CORE_READ_INTO(&file, vma, vm_file));
+        if (*vma_ptr == NULL)
+        {
+            __builtin_memset(&event->area[i % 8], 0, sizeof(event->area[i % 8]));
+            CHECK_ERROR(bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU,
+                                              event, sizeof(*event)));
+            break;
+        }
+
+        CHECK_ERROR(BPF_CORE_READ_INTO(&file, *vma_ptr, vm_file));
 
         if (file)
         {
-            struct path path;
             CHECK_ERROR(BPF_CORE_READ_INTO(&path, file, f_path));
-            CHECK_ERROR(BPF_CORE_READ_INTO(&event->area[i].vm_pgoff, vma, vm_pgoff));
-            event->area[i].dentry = (unsigned long)path.dentry;
+            CHECK_ERROR(BPF_CORE_READ_INTO(&event->area[i % 8].vm_pgoff, *vma_ptr, vm_pgoff));
+            event->area[i % 8].dentry = (unsigned long)path.dentry;
 
-            if (*dentry_prev != event->area[i].dentry)
+            if (*dentry_prev != event->area[i % 8].dentry)
             {
                 CHECK_ERROR(bpf_map_update_elem(&path_percpu, dentry_i, &path, BPF_ANY));
 
-                *dentry_prev  = event->area[i].dentry;
+                *dentry_prev  = event->area[i % 8].dentry;
                 (*dentry_i)++;
             }
         }
         else
         {
-            event->area[i].vm_pgoff = 0;
-            event->area[i].dentry   = 0;
+            event->area[i % 8].vm_pgoff = 0;
+            event->area[i % 8].dentry   = 0;
         }
 
-        CHECK_ERROR(BPF_CORE_READ_INTO(&event->area[i].vm_start, vma, vm_start));
-        CHECK_ERROR(BPF_CORE_READ_INTO(&event->area[i].vm_end,   vma, vm_end));
-        CHECK_ERROR(BPF_CORE_READ_INTO(&vma,                     vma, vm_next));
+        CHECK_ERROR(BPF_CORE_READ_INTO(&event->area[i % 8].vm_start, *vma_ptr, vm_start));
+        CHECK_ERROR(BPF_CORE_READ_INTO(&event->area[i % 8].vm_end,   *vma_ptr, vm_end));
+        CHECK_ERROR(BPF_CORE_READ_INTO(vma_ptr,                      *vma_ptr, vm_next));
+
+        if ((i + 1) % 8 == 0)
+        {
+            CHECK_ERROR(bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU,
+                                              event, sizeof(*event)));
+        }
     }
 
-    CHECK_ERROR(bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU,
-                                      event, sizeof(*event)));
-
-    *vma_ptr = vma;
     return 0;
 }
 
@@ -583,12 +592,13 @@ int BPF_KPROBE(kprobe__do_coredump, const kernel_siginfo_t *siginfo)
     union
     {
         struct do_coredump_event coredump;
-        struct area_event        area;
+        struct vm_area_event     area;
         struct path_event        path;
     } event;
 
-    event.area.base.event_id = EVENT_ID(area_event);
+    event.area.base.event_id = EVENT_ID(vm_area_event);
     event.area.pid_tgid      = bpf_get_current_pid_tgid();
+    event.area.ktime         = bpf_ktime_get_ns();
 
     u32 dentry_i = 0;
     u64 dentry_prev = 0;
@@ -598,14 +608,22 @@ int BPF_KPROBE(kprobe__do_coredump, const kernel_siginfo_t *siginfo)
     struct vm_area_struct *vma = NULL;
     CHECK_ERROR(BPF_CORE_READ_INTO(&vma, task, mm, mmap));
 
-    CHECK_ERROR(area_output(ctx, &vma, &event.area, &dentry_i, &dentry_prev));
-    CHECK_ERROR(area_output(ctx, &vma, &event.area, &dentry_i, &dentry_prev));
-    CHECK_ERROR(area_output(ctx, &vma, &event.area, &dentry_i, &dentry_prev));
-    CHECK_ERROR(area_output(ctx, &vma, &event.area, &dentry_i, &dentry_prev));
-    CHECK_ERROR(area_output(ctx, &vma, &event.area, &dentry_i, &dentry_prev));
-    CHECK_ERROR(area_output(ctx, &vma, &event.area, &dentry_i, &dentry_prev));
-    CHECK_ERROR(area_output(ctx, &vma, &event.area, &dentry_i, &dentry_prev));
-    CHECK_ERROR(area_output(ctx, &vma, &event.area, &dentry_i, &dentry_prev));
+// #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 3, 0)
+//     #pragma unroll
+// #endif
+//     for (u32 i = 0; i < 8; i++)
+//     {
+//         CHECK_ERROR(vm_area_output(ctx, &vma, &event.area, &dentry_i, &dentry_prev));
+//     }
+
+    CHECK_ERROR(vm_area_output(ctx, &vma, &event.area, &dentry_i, &dentry_prev));
+    // CHECK_ERROR(vm_area_output(ctx, &vma, &event.area, &dentry_i, &dentry_prev));
+    // CHECK_ERROR(vm_area_output(ctx, &vma, &event.area, &dentry_i, &dentry_prev));
+    // CHECK_ERROR(vm_area_output(ctx, &vma, &event.area, &dentry_i, &dentry_prev));
+    // CHECK_ERROR(vm_area_output(ctx, &vma, &event.area, &dentry_i, &dentry_prev));
+    // CHECK_ERROR(vm_area_output(ctx, &vma, &event.area, &dentry_i, &dentry_prev));
+    // CHECK_ERROR(vm_area_output(ctx, &vma, &event.area, &dentry_i, &dentry_prev));
+    // CHECK_ERROR(vm_area_output(ctx, &vma, &event.area, &dentry_i, &dentry_prev));
 
     event.path.base.event_id = EVENT_ID(path_event);
     event.path.pid_tgid      = bpf_get_current_pid_tgid();

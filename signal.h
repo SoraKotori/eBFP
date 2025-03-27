@@ -16,7 +16,7 @@
     MAKE_EVENT_ID(sys_enter_read_event) \
     MAKE_EVENT_ID(sys_exit_read_event) \
     MAKE_EVENT_ID(path_event) \
-    MAKE_EVENT_ID(area_event) \
+    MAKE_EVENT_ID(vm_area_event) \
     MAKE_EVENT_ID(sched_process_exit_event) \
     MAKE_EVENT_ID(do_coredump_event) \
     MAKE_EVENT_ID(sys_exit_event)
@@ -113,11 +113,12 @@ struct path_event
     char path[MAX_ARG_LEN];
 };
 
-struct area_event
+struct vm_area_event
 {
     struct event_base base;
 
     PID_TGID_UNION;
+    __u64 ktime;
     struct vm_area
     {
         unsigned long vm_start;
