@@ -458,7 +458,13 @@ public:
         for (auto& area : event->area)
         {
             if (area.vm_start == 0)
+            {
+                std::println("pid: {:>6}, tid: {:>6}, vm_area, size: {}",
+                    event->tgid,
+                    event->pid,
+                    areas.size());
                 break;
+            }
             
             areas.emplace_back(area);
         }
