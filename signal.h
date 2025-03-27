@@ -109,7 +109,7 @@ struct path_event
 {
     struct event_base base;
 
-    PID_TGID_UNION;
+    unsigned long dentry;
     char path[MAX_ARG_LEN];
 };
 
