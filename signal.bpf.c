@@ -345,19 +345,21 @@ int tracepoint__syscalls__sys_enter_read(struct trace_event_raw_sys_enter *ctx)
 __always_inline
 long read_path(char dst[MAX_ARG_LEN], const struct path *path)
 {
-    struct dentry *dentry = NULL;
-    CHECK_ERROR(BPF_CORE_READ_INTO(&dentry, path, dentry));
+    struct dentry *dentry;
+    bpf_core_read(&dentry, sizeof(dentry), &path->dentry);
+    // CHECK_ERROR(BPF_CORE_READ_INTO(&dentry, path, dentry));
 
-    struct dentry *mnt_root = NULL;
-    CHECK_ERROR(BPF_CORE_READ_INTO(&mnt_root, path, mnt, mnt_root));
-
-    struct vfsmount *vfsmnt = NULL;
-    CHECK_ERROR(BPF_CORE_READ_INTO(&vfsmnt, path, mnt));
+    struct vfsmount *vfsmnt;
+    bpf_core_read(&vfsmnt, sizeof(vfsmnt), &path->mnt);
+    // CHECK_ERROR(BPF_CORE_READ_INTO(&vfsmnt, path, mnt));
 
     struct mount *mnt = container_of(vfsmnt, struct mount, mnt);
 
+    struct dentry *mnt_root;
+    bpf_core_read(&mnt_root, sizeof(mnt_root), &vfsmnt->mnt_root);
+    // CHECK_ERROR(BPF_CORE_READ_INTO(&mnt_root, path, mnt, mnt_root));
+
     u32 index = MAX_ARG_LEN - MAX_NAME_LEN;
-    dst[index] = '\0';
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 3, 0)
     #pragma unroll
@@ -366,31 +368,37 @@ long read_path(char dst[MAX_ARG_LEN], const struct path *path)
     {
         if (dentry == mnt_root)
         {
-            struct mount *mnt_parent = NULL;
-            CHECK_ERROR(BPF_CORE_READ_INTO(&mnt_parent, mnt, mnt_parent));
+            struct mount *mnt_parent;
+            bpf_core_read(&mnt_parent, sizeof(mnt_parent), &mnt->mnt_parent);
+            // CHECK_ERROR(BPF_CORE_READ_INTO(&mnt_parent, mnt, mnt_parent));
         
             if (mnt == mnt_parent)
                 break;
 
-            CHECK_ERROR(BPF_CORE_READ_INTO(&dentry, mnt, mnt_mountpoint));
-            CHECK_ERROR(BPF_CORE_READ_INTO(&mnt_root, mnt_parent, mnt.mnt_root));
+            bpf_core_read(&dentry, sizeof(dentry), &mnt->mnt_mountpoint);
+            // CHECK_ERROR(BPF_CORE_READ_INTO(&dentry, mnt, mnt_mountpoint));
+            bpf_core_read(&mnt_root, sizeof(mnt_root), &mnt_parent->mnt.mnt_root);
+            // CHECK_ERROR(BPF_CORE_READ_INTO(&mnt_root, mnt_parent, mnt.mnt_root));
             mnt = mnt_parent;
 
             continue;
         }
 
-        struct dentry *d_parent = NULL;
-        CHECK_ERROR(BPF_CORE_READ_INTO(&d_parent, dentry, d_parent));
+        struct dentry *d_parent;
+        bpf_core_read(&d_parent, sizeof(d_parent), &dentry->d_parent);
+        // CHECK_ERROR(BPF_CORE_READ_INTO(&d_parent, dentry, d_parent));
 
         // 在特殊的檔案系統中，如匿名 pipe 並不會經過 mnt_root，而會直接達到自身的 root
         if (dentry == d_parent)
             break;
 
-        char *name = NULL;
-        CHECK_ERROR(BPF_CORE_READ_INTO(&name, dentry, d_name.name));
+        const unsigned char *name;
+        bpf_core_read(&name, sizeof(name), &dentry->d_name.name);
+        // CHECK_ERROR(BPF_CORE_READ_INTO(&name, dentry, d_name.name));
 
-        u32 len = 0;
-        CHECK_ERROR(BPF_CORE_READ_INTO(&len, dentry, d_name.len));
+        u32 len;
+        bpf_core_read(&len, sizeof(len), &dentry->d_name.len);
+        // CHECK_ERROR(BPF_CORE_READ_INTO(&len, dentry, d_name.len));
 
         index -= len + 1;
 
@@ -398,7 +406,7 @@ long read_path(char dst[MAX_ARG_LEN], const struct path *path)
         if (len   >               MAX_NAME_LEN - 1) return -7; // E2BIG
 
         dst[index] = '/';
-        CHECK_ERROR(bpf_core_read(dst + index + 1, len, name));
+        bpf_core_read(dst + index + 1, len, name);
 
         dentry = d_parent;
     }
