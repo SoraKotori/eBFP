@@ -101,8 +101,7 @@ struct sys_exit_read_event
     int fd;
     int ret;
     __u16 i_mode;
-    __u32 index;
-    char name[MAX_ARG_LEN]; 
+    unsigned long dentry;
 };
 
 struct path_event
@@ -110,6 +109,7 @@ struct path_event
     struct event_base base;
 
     unsigned long dentry;
+    __u32 index;
     char path[MAX_ARG_LEN];
 };
 

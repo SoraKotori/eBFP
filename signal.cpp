@@ -383,10 +383,12 @@ public:
 class sys_exit_read_handler
 {
     std::unordered_map<__u64, read_argument>& map_;
+    std::unordered_map<unsigned long, std::string>& path_map_;
 
 public:
-    sys_exit_read_handler(decltype(map_) map) :
-        map_{map}
+    sys_exit_read_handler(decltype(map_) map, decltype(path_map_) path_map) :
+        map_{map},
+        path_map_{path_map}
     {}
 
     void operator()(int cpu, void *data, __u32 size)
@@ -426,12 +428,34 @@ public:
             event->fd,
             permission,
             mode,
-            std::string_view(event->name + event->index,
-                             event->name + MAX_ARG_LEN - MAX_NAME_LEN));
+            path_map_[event->dentry]);
 
         if (event->ret >= 0)
         {
             map_[event->pid_tgid].resize(event->ret);
+        }
+    }
+};
+
+class path_handler
+{
+    std::unordered_map<unsigned long, std::string>& map_;
+
+public:
+    path_handler(decltype(map_) map) :
+        map_{map}
+    {}
+
+    void operator()(int cpu, void *data, __u32 size)
+    {
+        auto event = static_cast<path_event*>(data);
+
+        auto result = map_.insert_or_assign(event->dentry,
+                                            std::string{event->path + event->index,
+                                                        event->path + MAX_ARG_LEN - MAX_NAME_LEN});
+        if (result.second == false)
+        {
+            std::println("warr: path dentry rep");
         }
     }
 };
@@ -633,7 +657,7 @@ int main(int argc, char *argv[])
         return EXIT_FAILURE;
 
     int  error = 0;
-    bool disable_read = true;
+    bool disable_read = false;
     if  (disable_read)
     {
         if ((error = bpf_program__set_autoload(skeleton->progs.tracepoint__syscalls__sys_enter_read, false)) < 0)
@@ -737,6 +761,7 @@ int main(int argc, char *argv[])
     std::unordered_map<__u64, kill_argument> kill_map;
     std::unordered_map<__u64, read_argument> read_map;
     std::unordered_map<__u64, std::vector<vm_area_event::vm_area>> vm_area_map;
+    std::unordered_map<unsigned long, std::string> path_map;
     
     event_handler<EVENT_MAX> handler;
     handler[EVENT_ID(sys_enter_execve_event)]   = sys_enter_execve_handler{execve_map};
@@ -744,7 +769,8 @@ int main(int argc, char *argv[])
     handler[EVENT_ID(sys_enter_kill_event)]     = sys_enter_kill_handler{kill_map};
     handler[EVENT_ID(sys_exit_kill_event)]      = sys_exit_kill_handler{kill_map};
     handler[EVENT_ID(sys_enter_read_event)]     = sys_enter_read_handler{read_map};
-    handler[EVENT_ID(sys_exit_read_event)]      = sys_exit_read_handler{read_map};
+    handler[EVENT_ID(sys_exit_read_event)]      = sys_exit_read_handler{read_map, path_map};
+    handler[EVENT_ID(path_event)]               = path_handler{path_map};
     handler[EVENT_ID(vm_area_event)]            = vm_area_handler{vm_area_map};
     handler[EVENT_ID(sched_process_exit_event)] = handle_sched_process_exit;
     handler[EVENT_ID(do_coredump_event)]        = do_coredump_handler{symbolizer.get(), skeleton->maps.stack_trace};

@@ -343,7 +343,7 @@ int tracepoint__syscalls__sys_enter_read(struct trace_event_raw_sys_enter *ctx)
 }
 
 __always_inline
-long read_path(char dst[MAX_ARG_LEN], struct path *path)
+long read_path(char dst[MAX_ARG_LEN], const struct path *path)
 {
     struct dentry *dentry = NULL;
     CHECK_ERROR(BPF_CORE_READ_INTO(&dentry, path, dentry));
@@ -406,20 +406,45 @@ long read_path(char dst[MAX_ARG_LEN], struct path *path)
     return index;
 }
 
+__always_inline
+long path_output(void *ctx,
+                       struct path_event* event, /* in/out */
+                 const struct path*       path)  /* in */
+{
+    struct path local_path;
+    CHECK_ERROR(bpf_probe_read_kernel(&local_path, sizeof(local_path), path));
+
+    u32 *flag = bpf_map_lookup_elem(&path_map, &local_path);
+    if (!flag)
+    {
+        CHECK_ERROR(BPF_CORE_READ_INTO(&event->dentry, path, dentry));
+        event->index = CHECK_ERROR(read_path(event->path, path));
+
+        CHECK_ERROR(bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU,
+                                          event, sizeof(*event)));
+
+        u32 zero = 0;
+        CHECK_ERROR(bpf_map_update_elem(&path_map, &local_path, &zero, BPF_ANY));
+    }
+
+    return flag == NULL;
+}
+
 SEC("tracepoint/syscalls/sys_exit_read")
 int tracepoint__syscalls__sys_exit_read(struct trace_event_raw_sys_exit *ctx)
 {
-    // 使用 union 同時宣告兩個事件結構，共用相同空間避免觸發 eBPF stack 限制
+    // 使用 union 同時宣告三個事件結構，共用相同空間避免觸發 eBPF stack 限制
     union
     {
         struct sys_enter_read_event enter;
         struct sys_exit_read_event exit;
+        struct path_event path;
     } event;
 
-    event.exit.pid_tgid = bpf_get_current_pid_tgid();
+    u64 pid_tgid = bpf_get_current_pid_tgid();
 
     // 透過 pid_tgid 從 read_map 中查找對應的 read_argument 結構，如果不存在則不是要監視的 read 事件
-    struct read_argument *read_ptr = bpf_map_lookup_elem(&read_map, &event.exit.pid_tgid);
+    struct read_argument *read_ptr = bpf_map_lookup_elem(&read_map, &pid_tgid);
     if (!read_ptr)
         return 0;
 
@@ -427,12 +452,7 @@ int tracepoint__syscalls__sys_exit_read(struct trace_event_raw_sys_exit *ctx)
     struct read_argument read_argument = *read_ptr;
 
     // 釋放掉對應的 read_argument
-    CHECK_ERROR(bpf_map_delete_elem(&read_map, &event.exit.pid_tgid));
-
-    // 初始化並填入 sys_exit_read_event 結構
-    event.exit.base.event_id = EVENT_ID(sys_exit_read_event);
-    event.exit.fd            = read_argument.fd;
-    event.exit.ret           = ctx->ret;
+    CHECK_ERROR(bpf_map_delete_elem(&read_map, &pid_tgid));
 
     // 取得當前 task 結構的指標
     struct task_struct *task = (struct task_struct *)CHECK_PTR(bpf_get_current_task());
@@ -448,10 +468,22 @@ int tracepoint__syscalls__sys_exit_read(struct trace_event_raw_sys_exit *ctx)
     // 讀取 file 結構中 f_path 欄位
     struct path *path = __builtin_preserve_access_index(&file->f_path);
 
+    event.path.base.event_id = EVENT_ID(path_event);
+    CHECK_ERROR(path_output(ctx, &event.path, path));
+    
+    // ------------------------------------------------------------
+
+    // ------------------------------------------------------------
+
+    // 初始化並填入 sys_exit_read_event 結構
+    event.exit.base.event_id = EVENT_ID(sys_exit_read_event);
+    event.exit.pid_tgid      = pid_tgid;
+    event.exit.fd            = read_argument.fd;
+    event.exit.ret           = ctx->ret;
+
     // 讀取 f_path 結構中 inode 的 i_mode 欄位，儲存到 sys_exit_read_event 結構中
     CHECK_ERROR(BPF_CORE_READ_INTO(&event.exit.i_mode, path, dentry, d_inode, i_mode));
-
-    event.exit.index = CHECK_ERROR(read_path(event.exit.name, path));
+    CHECK_ERROR(BPF_CORE_READ_INTO(&event.exit.dentry, path, dentry));
 
     // 將 sys_exit_read_event 傳送到 user space
     CHECK_ERROR(bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU,
@@ -529,8 +561,8 @@ int tracepoint__sched__sched_process_exit(struct trace_event_raw_sched_process_t
 
 __always_inline
 long vm_area_output(void *ctx,
-                    struct vm_area_event* const event, /* in/out */
-                    struct vm_area_struct* vma)        /* in */
+                          struct vm_area_event*  event, /* in/out */
+                    const struct vm_area_struct* vma)   /* in */
 {
     u32 path_i = 0;
     struct dentry *dentry_prev = NULL;
@@ -586,34 +618,6 @@ long vm_area_output(void *ctx,
     return 0;
 }
 
-__always_inline
-long path_output(void *ctx,
-                 struct path_event* const event, /* in/out */
-                 u32 path_size)                  /* in */
-{
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 3, 0)
-    #pragma unroll
-#endif
-    for (u32 path_i = 0; path_i < 2; path_i++)
-    {
-        struct path *path = bpf_map_lookup_elem(&path_percpu, &path_i);
-
-        u32 *flag = CHECK_PTR(bpf_map_lookup_elem(&path_map, path));
-        if (!flag)
-        {
-            CHECK_ERROR(read_path(event->path, path));
-
-            CHECK_ERROR(bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU,
-                                              event, sizeof(*event)));
-    
-            u32 zero = 0;
-            CHECK_ERROR(bpf_map_update_elem(&path_map, path, &zero, BPF_ANY));
-        }
-    }
-
-    return 0;
-}
-
 SEC("kprobe/do_coredump")
 int BPF_KPROBE(kprobe__do_coredump, const kernel_siginfo_t *siginfo)
 {
@@ -636,8 +640,19 @@ int BPF_KPROBE(kprobe__do_coredump, const kernel_siginfo_t *siginfo)
 
 
 
-    event.path.base.event_id = EVENT_ID(path_event);
-    // CHECK_ERROR(path_output(ctx, &event.path, path_size));
+//     event.path.base.event_id = EVENT_ID(path_event);
+
+// #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 3, 0)
+//     #pragma unroll
+// #endif
+//     for (u32 path_i = 0; path_i < 2; path_i++)
+//     {
+//         if (path_i == path_size)
+//             break;
+
+//         struct path *path = bpf_map_lookup_elem(&path_percpu, &path_i);
+//         // CHECK_ERROR(path_output(ctx, &event.path, path));
+//     }
 
 
 
