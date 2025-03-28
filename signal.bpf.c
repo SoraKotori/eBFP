@@ -406,15 +406,13 @@ long read_path(char dst[MAX_ARG_LEN], const struct path *path)
     return index;
 }
 
+// path need local varable
 __always_inline
 long path_output(void *ctx,
                        struct path_event* event, /* in/out */
                  const struct path*       path)  /* in */
 {
-    struct path local_path;
-    CHECK_ERROR(bpf_probe_read_kernel(&local_path, sizeof(local_path), path));
-
-    u32 *flag = bpf_map_lookup_elem(&path_map, &local_path);
+    u32 *flag = bpf_map_lookup_elem(&path_map, path);
     if (!flag)
     {
         CHECK_ERROR(BPF_CORE_READ_INTO(&event->dentry, path, dentry));
@@ -424,10 +422,10 @@ long path_output(void *ctx,
                                           event, sizeof(*event)));
 
         u32 zero = 0;
-        CHECK_ERROR(bpf_map_update_elem(&path_map, &local_path, &zero, BPF_ANY));
+        CHECK_ERROR(bpf_map_update_elem(&path_map, path, &zero, BPF_ANY));
     }
 
-    return flag == NULL;
+    return !flag;
 }
 
 SEC("tracepoint/syscalls/sys_exit_read")
@@ -466,10 +464,11 @@ int tracepoint__syscalls__sys_exit_read(struct trace_event_raw_sys_exit *ctx)
     CHECK_ERROR(bpf_probe_read_kernel(&file, sizeof(file), fd + read_argument.fd));
 
     // 讀取 file 結構中 f_path 欄位
-    struct path *path = __builtin_preserve_access_index(&file->f_path);
+    struct path path;
+    CHECK_ERROR(BPF_CORE_READ_INTO(&path, file, f_path));
 
     event.path.base.event_id = EVENT_ID(path_event);
-    CHECK_ERROR(path_output(ctx, &event.path, path));
+    CHECK_ERROR(path_output(ctx, &event.path, &path));
     
     // ------------------------------------------------------------
 
@@ -482,8 +481,8 @@ int tracepoint__syscalls__sys_exit_read(struct trace_event_raw_sys_exit *ctx)
     event.exit.ret           = ctx->ret;
 
     // 讀取 f_path 結構中 inode 的 i_mode 欄位，儲存到 sys_exit_read_event 結構中
-    CHECK_ERROR(BPF_CORE_READ_INTO(&event.exit.i_mode, path, dentry, d_inode, i_mode));
-    CHECK_ERROR(BPF_CORE_READ_INTO(&event.exit.dentry, path, dentry));
+    CHECK_ERROR(BPF_CORE_READ_INTO(&event.exit.i_mode, &path, dentry, d_inode, i_mode));
+    CHECK_ERROR(BPF_CORE_READ_INTO(&event.exit.dentry, &path, dentry));
 
     // 將 sys_exit_read_event 傳送到 user space
     CHECK_ERROR(bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU,

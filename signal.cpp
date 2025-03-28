@@ -450,10 +450,10 @@ public:
     {
         auto event = static_cast<path_event*>(data);
 
-        auto result = map_.insert_or_assign(event->dentry,
-                                            std::string{event->path + event->index,
-                                                        event->path + MAX_ARG_LEN - MAX_NAME_LEN});
-        if (result.second == false)
+        auto [_, inserted] = map_.insert_or_assign(event->dentry,
+                                                   std::string{event->path + event->index,
+                                                               event->path + MAX_ARG_LEN - MAX_NAME_LEN});
+        if (inserted == false)
         {
             std::println("warr: path dentry rep");
         }
