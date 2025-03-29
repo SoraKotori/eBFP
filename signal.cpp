@@ -17,6 +17,36 @@
 #include <bpf/libbpf.h>
 #include <blazesym.h>
 
+struct path
+{
+	void *mnt;
+	void *dentry;
+};
+
+struct path_hash
+{
+    std::size_t operator()(const path& path) const
+    {
+        // 先對每個成員做 std::hash
+        std::size_t h1 = std::hash<decltype(path.mnt)>{}(path.mnt);
+        std::size_t h2 = std::hash<decltype(path.dentry)>{}(path.dentry);
+        
+        // 簡單的「XOR + 移位」混合做法：
+        // 這裡 0x9e3779b97f4a7c15ULL 是常見的「黃金比例」常數
+        // 只是一種常見的雜湊結合技巧，讓結果分佈更均勻
+        return h1 ^ (h2 + 0x9e3779b97f4a7c15ULL + (h1 << 6) + (h1 >> 2));
+    }
+};
+
+struct path_equal
+{
+    bool operator()(const path& left, const path& right) const
+    {
+        return left.dentry == right.dentry &&
+               left.mnt    == right.mnt;
+    }
+};
+
 #include "signal.h"
 #include "signal.skel.h"
 
@@ -383,7 +413,7 @@ public:
 class sys_exit_read_handler
 {
     std::unordered_map<__u64, read_argument>& map_;
-    std::unordered_map<unsigned long, std::string>& path_map_;
+    std::unordered_map<path, std::string, path_hash, path_equal>& path_map_;
 
 public:
     sys_exit_read_handler(decltype(map_) map, decltype(path_map_) path_map) :
@@ -428,7 +458,7 @@ public:
             event->fd,
             permission,
             mode,
-            path_map_[event->dentry]);
+            path_map_[event->path]);
 
         if (event->ret >= 0)
         {
@@ -439,23 +469,37 @@ public:
 
 class path_handler
 {
-    std::unordered_map<unsigned long, std::string>& map_;
+    std::unordered_map<path, std::string, path_hash, path_equal>& map_;
+    bpf_map *path_map_;
 
 public:
-    path_handler(decltype(map_) map) :
-        map_{map}
+    path_handler(decltype(map_) map, decltype(path_map_) path_map) :
+        map_{map},
+        path_map_{path_map}
     {}
 
     void operator()(int cpu, void *data, __u32 size)
     {
         auto event = static_cast<path_event*>(data);
 
-        auto [_, inserted] = map_.insert_or_assign(event->dentry,
-                                                   std::string{event->path + event->index,
-                                                               event->path + MAX_ARG_LEN - MAX_NAME_LEN});
+        std::array<char, MAX_ARG_LEN> buffer;
+        auto error = bpf_map__lookup_elem(path_map_,
+                                          &event->path, sizeof(event->path),
+                                          std::data(buffer), sizeof(buffer), 0);
+        if  (error < 0)
+        {
+            std::println("error: bpf_map__lookup_elem < 0");
+            return;
+        }
+
+        auto [_, inserted] = map_.insert_or_assign(
+            event->path,
+            std::string{std::begin(buffer) + event->index,
+                        std::begin(buffer) + MAX_ARG_LEN - MAX_NAME_LEN});
+
         if (inserted == false)
         {
-            std::println("warr: path dentry rep");
+            std::println("error: insert_or_assign.inserted == false");
         }
     }
 };
@@ -761,7 +805,7 @@ int main(int argc, char *argv[])
     std::unordered_map<__u64, kill_argument> kill_map;
     std::unordered_map<__u64, read_argument> read_map;
     std::unordered_map<__u64, std::vector<vm_area_event::vm_area>> vm_area_map;
-    std::unordered_map<unsigned long, std::string> path_map;
+    std::unordered_map<path,  std::string, path_hash, path_equal> path_map;
     
     event_handler<EVENT_MAX> handler;
     handler[EVENT_ID(sys_enter_execve_event)]   = sys_enter_execve_handler{execve_map};
@@ -770,7 +814,7 @@ int main(int argc, char *argv[])
     handler[EVENT_ID(sys_exit_kill_event)]      = sys_exit_kill_handler{kill_map};
     handler[EVENT_ID(sys_enter_read_event)]     = sys_enter_read_handler{read_map};
     handler[EVENT_ID(sys_exit_read_event)]      = sys_exit_read_handler{read_map, path_map};
-    handler[EVENT_ID(path_event)]               = path_handler{path_map};
+    handler[EVENT_ID(path_event)]               = path_handler{path_map, skeleton->maps.path_map};
     handler[EVENT_ID(vm_area_event)]            = vm_area_handler{vm_area_map};
     handler[EVENT_ID(sched_process_exit_event)] = handle_sched_process_exit;
     handler[EVENT_ID(do_coredump_event)]        = do_coredump_handler{symbolizer.get(), skeleton->maps.stack_trace};

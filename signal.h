@@ -101,16 +101,15 @@ struct sys_exit_read_event
     int fd;
     int ret;
     __u16 i_mode;
-    unsigned long dentry;
+    struct path path;
 };
 
 struct path_event
 {
     struct event_base base;
 
-    unsigned long dentry;
     __u32 index;
-    char path[MAX_ARG_LEN];
+    struct path path;
 };
 
 struct vm_area_event

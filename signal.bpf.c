@@ -9,6 +9,7 @@
 
 #define MAX_ARGS 32
 #define MAX_ENTRIES 8192
+#define MAX_AREA 2048
 
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
@@ -85,8 +86,15 @@ struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, MAX_ENTRIES);
     __type(key, struct path);
-    __type(value, u32);
+    __type(value, char[MAX_ARG_LEN]);
 } path_map SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, u32);
+    __type(value, char[MAX_ARG_LEN]);
+} path_buffer SEC(".maps");
 
 struct {
     __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
@@ -342,7 +350,7 @@ int tracepoint__syscalls__sys_enter_read(struct trace_event_raw_sys_enter *ctx)
     return 0;
 }
 
-__always_inline
+static __always_inline
 long read_path(char dst[MAX_ARG_LEN], const struct path *path)
 {
     struct dentry *dentry;
@@ -406,7 +414,7 @@ long read_path(char dst[MAX_ARG_LEN], const struct path *path)
         if (len   >               MAX_NAME_LEN - 1) return -7; // E2BIG
 
         dst[index] = '/';
-        bpf_core_read(dst + index + 1, len, name);
+        bpf_probe_read_kernel(dst + index + 1, len & (MAX_NAME_LEN - 1), name);
 
         dentry = d_parent;
     }
@@ -414,26 +422,31 @@ long read_path(char dst[MAX_ARG_LEN], const struct path *path)
     return index;
 }
 
-// path need local varable
-__always_inline
-long path_output(void *ctx,
-                       struct path_event* event, /* in/out */
-                 const struct path*       path)  /* in */
+static __noinline
+long path_output(void *ctx, const struct path *path)
 {
-    u32 *flag = bpf_map_lookup_elem(&path_map, path);
-    if (!flag)
+    struct path_event event;
+
+    bpf_probe_read_kernel(&event.path, sizeof(event.path), path);
+
+    char *path_name = bpf_map_lookup_elem(&path_map, &event.path);
+    if  (!path_name)
     {
-        CHECK_ERROR(BPF_CORE_READ_INTO(&event->dentry, path, dentry));
-        event->index = CHECK_ERROR(read_path(event->path, path));
+        u32 zero = 0;
+        char *buffer = bpf_map_lookup_elem(&path_buffer, &zero);
+        if  (!buffer)
+            return -1;
+
+        event.index = CHECK_ERROR(read_path(buffer, &event.path));
+        event.base.event_id = EVENT_ID(path_event);
+
+        CHECK_ERROR(bpf_map_update_elem(&path_map, &event.path, buffer, BPF_ANY));
 
         CHECK_ERROR(bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU,
-                                          event, sizeof(*event)));
-
-        u32 zero = 0;
-        CHECK_ERROR(bpf_map_update_elem(&path_map, path, &zero, BPF_ANY));
+                                          &event, sizeof(event)));
     }
 
-    return !flag;
+    return !path_name;
 }
 
 SEC("tracepoint/syscalls/sys_exit_read")
@@ -444,7 +457,6 @@ int tracepoint__syscalls__sys_exit_read(struct trace_event_raw_sys_exit *ctx)
     {
         struct sys_enter_read_event enter;
         struct sys_exit_read_event exit;
-        struct path_event path;
     } event;
 
     u64 pid_tgid = bpf_get_current_pid_tgid();
@@ -472,11 +484,9 @@ int tracepoint__syscalls__sys_exit_read(struct trace_event_raw_sys_exit *ctx)
     CHECK_ERROR(bpf_probe_read_kernel(&file, sizeof(file), fd + read_argument.fd));
 
     // 讀取 file 結構中 f_path 欄位
-    struct path path;
-    CHECK_ERROR(BPF_CORE_READ_INTO(&path, file, f_path));
+    CHECK_ERROR(BPF_CORE_READ_INTO(&event.exit.path, file, f_path));
 
-    event.path.base.event_id = EVENT_ID(path_event);
-    CHECK_ERROR(path_output(ctx, &event.path, &path));
+    CHECK_ERROR(path_output(ctx, &event.exit.path));
     
     // ------------------------------------------------------------
 
@@ -488,9 +498,8 @@ int tracepoint__syscalls__sys_exit_read(struct trace_event_raw_sys_exit *ctx)
     event.exit.fd            = read_argument.fd;
     event.exit.ret           = ctx->ret;
 
-    // 讀取 f_path 結構中 inode 的 i_mode 欄位，儲存到 sys_exit_read_event 結構中
-    CHECK_ERROR(BPF_CORE_READ_INTO(&event.exit.i_mode, &path, dentry, d_inode, i_mode));
-    CHECK_ERROR(BPF_CORE_READ_INTO(&event.exit.dentry, &path, dentry));
+    // 讀取 dentry 結構中 inode 的 i_mode 欄位，儲存到 sys_exit_read_event 結構中
+    CHECK_ERROR(BPF_CORE_READ_INTO(&event.exit.i_mode, file, f_path.dentry, d_inode, i_mode));
 
     // 將 sys_exit_read_event 傳送到 user space
     CHECK_ERROR(bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU,
@@ -577,7 +586,7 @@ long vm_area_output(void *ctx,
 #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 3, 0)
     #pragma unroll
 #endif
-    for (u32 i = 0; i < 2048; i++)
+    for (u32 i = 0; i < MAX_AREA; i++)
     {
         if (!vma)
         {
