@@ -507,11 +507,13 @@ public:
 class vm_area_handler
 {
     std::unordered_map<__u64, std::vector<vm_area_event::vm_area>>& map_;
+    std::unordered_map<path,  std::string, path_hash, path_equal>& path_map_;
     std::unordered_map<int, __u64> ktime_map_;
 
 public:
-    vm_area_handler(decltype(map_) map) :
-        map_{map}
+    vm_area_handler(decltype(map_) map, decltype(path_map_) path_map) :
+        map_{map},
+        path_map_{path_map}
     {}
 
     void operator()(int cpu, void *data, __u32 size)
@@ -538,10 +540,13 @@ public:
 
                 for (const auto& entry : areas)
                 {
-                    std::println("    {:#018x} {:#018x} {:#010x}",
+                    std::println("    {:#018x} {:#018x} {:#010x} {:p} {:p} name: {}",
                     entry.vm_start,
                     entry.vm_end,
-                    entry.vm_pgoff * 4096);
+                    entry.vm_pgoff * 4096,
+                    entry.path.dentry,
+                    entry.path.mnt,
+                    path_map_[entry.path]);
                 }
                 break;
             }
@@ -815,7 +820,7 @@ int main(int argc, char *argv[])
     handler[EVENT_ID(sys_enter_read_event)]     = sys_enter_read_handler{read_map};
     handler[EVENT_ID(sys_exit_read_event)]      = sys_exit_read_handler{read_map, path_map};
     handler[EVENT_ID(path_event)]               = path_handler{path_map, skeleton->maps.path_map};
-    handler[EVENT_ID(vm_area_event)]            = vm_area_handler{vm_area_map};
+    handler[EVENT_ID(vm_area_event)]            = vm_area_handler{vm_area_map, path_map};
     handler[EVENT_ID(sched_process_exit_event)] = handle_sched_process_exit;
     handler[EVENT_ID(do_coredump_event)]        = do_coredump_handler{symbolizer.get(), skeleton->maps.stack_trace};
     handler[EVENT_ID(sys_exit_event)]           = sys_exit_handler{normalizer.get(), symbolizer.get(), skeleton->maps.stack_trace};

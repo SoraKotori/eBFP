@@ -9,7 +9,7 @@
 
 #define MAX_ARGS 32
 #define MAX_ENTRIES 8192
-#define MAX_AREA 2048
+#define MAX_AREA 1024
 
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
@@ -98,9 +98,9 @@ struct {
 
 struct {
     __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
-    __uint(max_entries, MAX_ARGS);
+    __uint(max_entries, 1);
     __type(key, u32);
-    __type(value, struct path);
+    __type(value, struct path[MAX_AREA]);
 } path_percpu SEC(".maps");
 
 struct {
@@ -410,8 +410,8 @@ long read_path(char dst[MAX_ARG_LEN], const struct path *path)
 
         index -= len + 1;
 
-        if (index > MAX_ARG_LEN - MAX_NAME_LEN)     return -7; // E2BIG
-        if (len   >               MAX_NAME_LEN - 1) return -7; // E2BIG
+        if (index > MAX_ARG_LEN - MAX_NAME_LEN)     return -7; // E2BIG (Argument list too long)
+        if (len   >               MAX_NAME_LEN - 1) return -7; // E2BIG (Argument list too long)
 
         dst[index] = '/';
         bpf_probe_read_kernel(dst + index + 1, len & (MAX_NAME_LEN - 1), name);
@@ -427,7 +427,8 @@ long path_output(void *ctx, const struct path *path)
 {
     struct path_event event;
 
-    bpf_probe_read_kernel(&event.path, sizeof(event.path), path);
+    if (bpf_probe_read_kernel(&event.path, sizeof(event.path), path))
+        return -1;
 
     char *path_name = bpf_map_lookup_elem(&path_map, &event.path);
     if  (!path_name)
@@ -575,13 +576,18 @@ int tracepoint__sched__sched_process_exit(struct trace_event_raw_sched_process_t
     return 0;
 }
 
-__always_inline
+static __always_inline
 long vm_area_output(void *ctx,
                           struct vm_area_event*  event, /* in/out */
                     const struct vm_area_struct* vma)   /* in */
 {
     u32 path_i = 0;
     struct dentry *dentry_prev = NULL;
+
+    u32 zero = 0;
+    struct path *paths = bpf_map_lookup_elem(&path_percpu, &zero);
+    if (!paths)
+        return -1;
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 3, 0)
     #pragma unroll
@@ -590,48 +596,40 @@ long vm_area_output(void *ctx,
     {
         if (!vma)
         {
-            __builtin_memset(&event->area[i % 8], 0, sizeof(event->area[i % 8]));
-            CHECK_ERROR(bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU,
-                                              event, sizeof(*event)));
-            return path_i;
+            __builtin_memset(&event->area[i % 4], 0, sizeof(struct vm_area));
+            path_i = i;
+            break;
         }
 
-        struct file *file = BPF_CORE_READ(vma, vm_file);
-        if (file)
-        {
-            struct path path = BPF_CORE_READ(file, f_path);
-
-            event->area[i % 8].vm_pgoff = BPF_CORE_READ(vma, vm_pgoff);
-            event->area[i % 8].dentry   = (unsigned long)path.dentry;
-
-            if (dentry_prev != path.dentry)
-            {
-                long error = bpf_map_update_elem(&path_percpu, &path_i, &path, BPF_ANY);
-                // if  (error < 0)
-                //     PRINT_ERROR(error);
-
-                dentry_prev  = path.dentry;
-                path_i++;
-            }
-        }
-        else
-        {
-            event->area[i % 8].vm_pgoff = 0;
-            event->area[i % 8].dentry   = 0;
-        }
-
-        event->area[i % 8].vm_start = BPF_CORE_READ(vma, vm_start);
-        event->area[i % 8].vm_end   = BPF_CORE_READ(vma, vm_end);
+        event->area[i % 4].vm_start = BPF_CORE_READ(vma, vm_start);
+        event->area[i % 4].vm_end   = BPF_CORE_READ(vma, vm_end);
+        event->area[i % 4].vm_pgoff = BPF_CORE_READ(vma, vm_pgoff);
+        event->area[i % 4].path     = BPF_CORE_READ(vma, vm_file, f_path);
         vma                         = BPF_CORE_READ(vma, vm_next);
 
-        if (i % 8 == 7)
-        {
+        // if (!bpf_map_lookup_elem(&path_map, &event->area[i % 4].path))
+        paths[i] = event->area[i % 4].path;
+
+        if (i % 4 == 3)
             CHECK_ERROR(bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU,
-                                              event, sizeof(*event)));
-        }
+                                              event, sizeof(*event)));            
     }
 
-    return 0;
+    if (vma)
+        __builtin_memset(&event->area[0], 0, sizeof(struct vm_area));
+
+    CHECK_ERROR(bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU,
+                                      event, sizeof(*event)));
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 3, 0)
+    #pragma unroll
+#endif
+    for (u32 i = 0; i < 12; i++)
+    {
+        path_output(ctx, &paths[i]);
+    }
+
+    return path_i;
 }
 
 SEC("kprobe/do_coredump")
@@ -641,35 +639,41 @@ int BPF_KPROBE(kprobe__do_coredump, const kernel_siginfo_t *siginfo)
     {
         struct do_coredump_event coredump;
         struct vm_area_event     area;
-        struct path_event        path;
     } event;
 
-    event.area.base.event_id = EVENT_ID(vm_area_event);
-    event.area.pid_tgid      = bpf_get_current_pid_tgid();
-    event.area.ktime         = bpf_ktime_get_ns();
+    // event.area.base.event_id = EVENT_ID(vm_area_event);
+    // event.area.pid_tgid      = bpf_get_current_pid_tgid();
+    // event.area.ktime         = bpf_ktime_get_ns();
 
-    struct task_struct *task = (struct task_struct *)CHECK_PTR(bpf_get_current_task());
+    // struct task_struct *task = (struct task_struct *)CHECK_PTR(bpf_get_current_task());
 
-    struct vm_area_struct *vma = NULL;
-    CHECK_ERROR(BPF_CORE_READ_INTO(&vma, task, mm, mmap));
-    u32 path_size = CHECK_ERROR(vm_area_output(ctx, &event.area, vma));
+    // struct vm_area_struct *vma = NULL;
+    // CHECK_ERROR(BPF_CORE_READ_INTO(&vma, task, mm, mmap));
+    // u32 path_size = CHECK_ERROR(vm_area_output(ctx, &event.area, vma));
 
 
 
-//     event.path.base.event_id = EVENT_ID(path_event);
+    // u32 zero = 0;
+    // struct path *paths = CHECK_PTR(bpf_map_lookup_elem(&path_percpu, &zero));
+    // if (!paths)
+    //     return 0;
 
 // #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 3, 0)
 //     #pragma unroll
 // #endif
-//     for (u32 path_i = 0; path_i < 2; path_i++)
-//     {
-//         if (path_i == path_size)
-//             break;
+//     for (u32 path_i = 0; path_i < 1; path_i++)
+//         if  (path_i < path_size)
+//         {
+//             struct path* path = bpf_map_lookup_elem(&path_percpu, &path_i);
 
-//         struct path *path = bpf_map_lookup_elem(&path_percpu, &path_i);
-//         // CHECK_ERROR(path_output(ctx, &event.path, path));
-//     }
+//             CHECK_ERROR(path_output(ctx, path));
+//         }
 
+    // struct path* path;
+    // u32 path_i = 0;
+
+    // path = bpf_map_lookup_elem(&path_percpu, &path_i);
+    // CHECK_ERROR(path_output(ctx, path));
 
 
     event.coredump.base.event_id = EVENT_ID(do_coredump_event);

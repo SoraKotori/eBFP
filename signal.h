@@ -123,8 +123,8 @@ struct vm_area_event
         unsigned long vm_start;
         unsigned long vm_end;
         unsigned long vm_pgoff;
-        unsigned long dentry;
-    } area[8];
+        struct path path;
+    } area[4];
 };
 
 struct sched_process_exit_event
