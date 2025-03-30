@@ -3,6 +3,7 @@
 #define MAX_ARG_LEN 256 // ebpf stack max 512 bytes
 #define MAX_NAME_LEN 64
 #define MAX_SYSCALL 8 // 512 divide 64
+#define MAX_AREA 128
 
 #ifndef PERF_MAX_STACK_DEPTH
 #define PERF_MAX_STACK_DEPTH 127
@@ -124,7 +125,7 @@ struct vm_area_event
         unsigned long vm_end;
         unsigned long vm_pgoff;
         struct path path;
-    } area[4];
+    } area[MAX_AREA];
 };
 
 struct sched_process_exit_event
