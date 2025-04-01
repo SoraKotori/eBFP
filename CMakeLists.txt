@@ -76,12 +76,6 @@ add_custom_target(vmlinux_h DEPENDS "${BPFOBJECT_VMLINUX_H}")
 
 find_package(BpfObject REQUIRED)
 
-bpf_object(bootstrap bootstrap.bpf.c)
-add_executable(bootstrap bootstrap.c)
-add_dependencies(bootstrap_skel vmlinux_h)
-target_link_libraries(bootstrap bootstrap_skel)
-target_compile_features(bootstrap PRIVATE cxx_std_23)
-
 bpf_object(signal signal.bpf.c)
 add_executable(signal signal.cpp)
 add_dependencies(signal_skel vmlinux_h)
