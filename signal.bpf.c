@@ -417,7 +417,7 @@ long read_path(char dst[MAX_ARG_LEN], const struct path *path)
         index -= len + 1;
 
         if (index > MAX_ARG_LEN - MAX_NAME_LEN)     return -7; // E2BIG (Argument list too long)
-        if (len   >               MAX_NAME_LEN - 1) return -7; // E2BIG (Argument list too long)
+        // if (len   >               MAX_NAME_LEN - 1) return -7; // E2BIG (Argument list too long)
 
         dst[index] = '/';
         bpf_probe_read_kernel(dst + index + 1, len & (MAX_NAME_LEN - 1), name);
@@ -450,7 +450,7 @@ long path_output(void *ctx, const struct path *path)
 SEC("tracepoint/syscalls/sys_exit_read")
 int tracepoint__syscalls__sys_exit_read(struct trace_event_raw_sys_exit *ctx)
 {
-    // 使用 union 同時宣告三個事件結構，共用相同空間避免觸發 eBPF stack 限制
+    // 使用 union 同時宣告兩個事件結構，共用相同空間避免觸發 eBPF stack 限制
     union
     {
         struct sys_enter_read_event enter;
@@ -612,10 +612,9 @@ long vm_area_output(void *ctx, u64 pid_tgid,
         event->area[i].path     = BPF_CORE_READ(vma, vm_file, f_path);
         vma                     = BPF_CORE_READ(vma, vm_next);
 
-        if (
-            !bpf_map_lookup_elem(&path_map, &event->area[i].path) &&
-            // event->area[i].path.dentry != path_prev.dentry &&
-            event->area[i].path.mnt    != path_prev.mnt)
+        if (!bpf_map_lookup_elem(&path_map, &event->area[i].path) &&
+            event->area[i].path.dentry != path_prev.dentry)
+            // event->area[i].path.mnt    != path_prev.mnt)
         {
 
             paths[path_i] = event->area[i].path;
@@ -636,6 +635,19 @@ long vm_area_output(void *ctx, u64 pid_tgid,
 SEC("kprobe/do_coredump")
 int BPF_KPROBE(kprobe__do_coredump, const kernel_siginfo_t *siginfo)
 {
+    INIT_EVENT(event, do_coredump_event,
+        .pid_tgid = bpf_get_current_pid_tgid(),
+        .stack_id = CHECK_ERROR(bpf_get_stackid(ctx, &stack_trace, BPF_F_USER_STACK))
+    );
+
+    CHECK_ERROR(BPF_CORE_READ_INTO(&event.si_signo, siginfo, si_signo));
+    CHECK_ERROR(BPF_CORE_READ_INTO(&event.si_code,  siginfo, si_code));
+
+    CHECK_ERROR(bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU,
+                                      &event, sizeof(event)));
+
+
+
     // struct task_struct *task = (struct task_struct *)CHECK_PTR(bpf_get_current_task());
 
     // struct vm_area_struct *vma = NULL;
@@ -661,18 +673,6 @@ int BPF_KPROBE(kprobe__do_coredump, const kernel_siginfo_t *siginfo)
         CHECK_ERROR(path_output(ctx, &paths[path_i]));
     }
 
-
-    
-    INIT_EVENT(event, do_coredump_event,
-        .pid_tgid = bpf_get_current_pid_tgid(),
-        .stack_id = CHECK_ERROR(bpf_get_stackid(ctx, &stack_trace, BPF_F_USER_STACK))
-    );
-
-    CHECK_ERROR(BPF_CORE_READ_INTO(&event.si_signo, siginfo, si_signo));
-    CHECK_ERROR(BPF_CORE_READ_INTO(&event.si_code,  siginfo, si_code));
-
-    CHECK_ERROR(bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU,
-                                      &event, sizeof(event)));
     return 0;
 }
 
