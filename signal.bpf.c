@@ -163,6 +163,138 @@ struct EVENT_TYPE name =                  \
     }                          \
 })
 
+static __always_inline
+long read_path(char dst[MAX_ARG_LEN], const struct path *path)
+{
+    struct dentry *dentry;
+    bpf_core_read(&dentry, sizeof(dentry), &path->dentry);
+    // CHECK_ERROR(BPF_CORE_READ_INTO(&dentry, path, dentry));
+
+    struct vfsmount *vfsmnt;
+    bpf_core_read(&vfsmnt, sizeof(vfsmnt), &path->mnt);
+    // CHECK_ERROR(BPF_CORE_READ_INTO(&vfsmnt, path, mnt));
+
+    struct mount *mnt = container_of(vfsmnt, struct mount, mnt);
+
+    struct dentry *mnt_root;
+    bpf_core_read(&mnt_root, sizeof(mnt_root), &vfsmnt->mnt_root);
+    // CHECK_ERROR(BPF_CORE_READ_INTO(&mnt_root, path, mnt, mnt_root));
+
+    u32 index = MAX_ARG_LEN - MAX_NAME_LEN;
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 3, 0)
+    #pragma unroll
+#endif
+    for (u32 i = 0; i < MAX_ARGS; i++)
+    {
+        if (dentry == mnt_root)
+        {
+            struct mount *mnt_parent;
+            bpf_core_read(&mnt_parent, sizeof(mnt_parent), &mnt->mnt_parent);
+            // CHECK_ERROR(BPF_CORE_READ_INTO(&mnt_parent, mnt, mnt_parent));
+        
+            if (mnt == mnt_parent)
+                break;
+
+            bpf_core_read(&dentry, sizeof(dentry), &mnt->mnt_mountpoint);
+            // CHECK_ERROR(BPF_CORE_READ_INTO(&dentry, mnt, mnt_mountpoint));
+            bpf_core_read(&mnt_root, sizeof(mnt_root), &mnt_parent->mnt.mnt_root);
+            // CHECK_ERROR(BPF_CORE_READ_INTO(&mnt_root, mnt_parent, mnt.mnt_root));
+            mnt = mnt_parent;
+
+            continue;
+        }
+
+        struct dentry *d_parent;
+        bpf_core_read(&d_parent, sizeof(d_parent), &dentry->d_parent);
+        // CHECK_ERROR(BPF_CORE_READ_INTO(&d_parent, dentry, d_parent));
+
+        // 在特殊的檔案系統中，如匿名 pipe 並不會經過 mnt_root，而會直接達到自身的 root
+        if (dentry == d_parent)
+            break;
+
+        const unsigned char *name;
+        bpf_core_read(&name, sizeof(name), &dentry->d_name.name);
+        // CHECK_ERROR(BPF_CORE_READ_INTO(&name, dentry, d_name.name));
+
+        u32 len;
+        bpf_core_read(&len, sizeof(len), &dentry->d_name.len);
+        // CHECK_ERROR(BPF_CORE_READ_INTO(&len, dentry, d_name.len));
+
+        index -= len + 1;
+
+        if (index > MAX_ARG_LEN - MAX_NAME_LEN)     return -7; // E2BIG (Argument list too long)
+        // if (len   >               MAX_NAME_LEN - 1) return -7; // E2BIG (Argument list too long)
+
+        dst[index] = '/';
+        bpf_probe_read_kernel(dst + index + 1, len & (MAX_NAME_LEN - 1), name);
+
+        dentry = d_parent;
+    }
+
+    return index;
+}
+
+static
+long path_output(void *ctx, const struct path *path)
+{
+    u32 zero = 0;
+    char *buffer = bpf_map_lookup_elem(&path_buffer, &zero);
+    if  (!buffer)
+        return -1;
+
+    INIT_EVENT(event, path_event,
+        .index = CHECK_ERROR(read_path(buffer, path)),
+        .path  = *path
+    );
+
+    CHECK_ERROR(bpf_map_update_elem(&path_map, path, buffer, BPF_ANY));
+    CHECK_ERROR(bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU,
+                                      &event, sizeof(event)));
+    return 0;
+}
+
+SEC("raw_tracepoint")
+int tailcall_0(struct bpf_raw_tracepoint_args *ctx)
+{
+    u32 zero = 0;
+    struct path *paths = CHECK_PTR(bpf_map_lookup_elem(&path_percpu, &zero));
+    if (!paths)
+        return 0;
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 3, 0)
+    #pragma unroll
+#endif
+    for (u32 path_i = 0; path_i < 14; path_i++)
+    {
+        // barrier();
+
+        if (paths[path_i].mnt == NULL)
+            break;
+        // struct path* path = bpf_map_lookup_elem(&path_percpu, &path_i);
+
+        CHECK_ERROR(path_output(ctx, &paths[path_i]));
+    }
+
+    return 0;
+}
+
+#define TAIL_CALL_ZERO 0
+#define TAIL_CALL_ONE 1
+
+struct {
+    __uint(type, BPF_MAP_TYPE_PROG_ARRAY);
+    __uint(max_entries, 1);
+    __uint(key_size, sizeof(u32));
+    __array(values, int (void *));
+} prog_array_map SEC(".maps") =
+{
+    .values =
+    {
+        [TAIL_CALL_ZERO] = (void *)&tailcall_0
+    },
+};
+
 __always_inline
 int pattern_strcmp(const char *const pattern, const char *const arg)
 {
@@ -356,97 +488,6 @@ int tracepoint__syscalls__sys_enter_read(struct trace_event_raw_sys_enter *ctx)
     return 0;
 }
 
-static __always_inline
-long read_path(char dst[MAX_ARG_LEN], const struct path *path)
-{
-    struct dentry *dentry;
-    bpf_core_read(&dentry, sizeof(dentry), &path->dentry);
-    // CHECK_ERROR(BPF_CORE_READ_INTO(&dentry, path, dentry));
-
-    struct vfsmount *vfsmnt;
-    bpf_core_read(&vfsmnt, sizeof(vfsmnt), &path->mnt);
-    // CHECK_ERROR(BPF_CORE_READ_INTO(&vfsmnt, path, mnt));
-
-    struct mount *mnt = container_of(vfsmnt, struct mount, mnt);
-
-    struct dentry *mnt_root;
-    bpf_core_read(&mnt_root, sizeof(mnt_root), &vfsmnt->mnt_root);
-    // CHECK_ERROR(BPF_CORE_READ_INTO(&mnt_root, path, mnt, mnt_root));
-
-    u32 index = MAX_ARG_LEN - MAX_NAME_LEN;
-
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 3, 0)
-    #pragma unroll
-#endif
-    for (u32 i = 0; i < MAX_ARGS; i++)
-    {
-        if (dentry == mnt_root)
-        {
-            struct mount *mnt_parent;
-            bpf_core_read(&mnt_parent, sizeof(mnt_parent), &mnt->mnt_parent);
-            // CHECK_ERROR(BPF_CORE_READ_INTO(&mnt_parent, mnt, mnt_parent));
-        
-            if (mnt == mnt_parent)
-                break;
-
-            bpf_core_read(&dentry, sizeof(dentry), &mnt->mnt_mountpoint);
-            // CHECK_ERROR(BPF_CORE_READ_INTO(&dentry, mnt, mnt_mountpoint));
-            bpf_core_read(&mnt_root, sizeof(mnt_root), &mnt_parent->mnt.mnt_root);
-            // CHECK_ERROR(BPF_CORE_READ_INTO(&mnt_root, mnt_parent, mnt.mnt_root));
-            mnt = mnt_parent;
-
-            continue;
-        }
-
-        struct dentry *d_parent;
-        bpf_core_read(&d_parent, sizeof(d_parent), &dentry->d_parent);
-        // CHECK_ERROR(BPF_CORE_READ_INTO(&d_parent, dentry, d_parent));
-
-        // 在特殊的檔案系統中，如匿名 pipe 並不會經過 mnt_root，而會直接達到自身的 root
-        if (dentry == d_parent)
-            break;
-
-        const unsigned char *name;
-        bpf_core_read(&name, sizeof(name), &dentry->d_name.name);
-        // CHECK_ERROR(BPF_CORE_READ_INTO(&name, dentry, d_name.name));
-
-        u32 len;
-        bpf_core_read(&len, sizeof(len), &dentry->d_name.len);
-        // CHECK_ERROR(BPF_CORE_READ_INTO(&len, dentry, d_name.len));
-
-        index -= len + 1;
-
-        if (index > MAX_ARG_LEN - MAX_NAME_LEN)     return -7; // E2BIG (Argument list too long)
-        // if (len   >               MAX_NAME_LEN - 1) return -7; // E2BIG (Argument list too long)
-
-        dst[index] = '/';
-        bpf_probe_read_kernel(dst + index + 1, len & (MAX_NAME_LEN - 1), name);
-
-        dentry = d_parent;
-    }
-
-    return index;
-}
-
-static
-long path_output(void *ctx, const struct path *path)
-{
-    u32 zero = 0;
-    char *buffer = bpf_map_lookup_elem(&path_buffer, &zero);
-    if  (!buffer)
-        return -1;
-
-    INIT_EVENT(event, path_event,
-        .index = CHECK_ERROR(read_path(buffer, path)),
-        .path  = *path
-    );
-
-    CHECK_ERROR(bpf_map_update_elem(&path_map, path, buffer, BPF_ANY));
-    CHECK_ERROR(bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU,
-                                      &event, sizeof(event)));
-    return 0;
-}
-
 SEC("tracepoint/syscalls/sys_exit_read")
 int tracepoint__syscalls__sys_exit_read(struct trace_event_raw_sys_exit *ctx)
 {
@@ -610,7 +651,8 @@ long vm_area_output(void *ctx, u64 pid_tgid,
         event->area[i].path     = BPF_CORE_READ(vma, vm_file, f_path);
         vma                     = BPF_CORE_READ(vma, vm_next);
 
-        if (!bpf_map_lookup_elem(&path_map, &event->area[i].path) &&
+        if (event->area[i].path.dentry &&
+            !bpf_map_lookup_elem(&path_map, &event->area[i].path) &&
             prev_dentry    != event->area[i].path.dentry)
         {
             prev_dentry     = event->area[i].path.dentry;
@@ -619,7 +661,7 @@ long vm_area_output(void *ctx, u64 pid_tgid,
     }
 
     event->area[i].vm_start = 0;
-    paths[path_i].mnt       = 0;
+    paths[path_i].mnt       = NULL;
 
     CHECK_ERROR(bpf_perf_event_output(
         ctx, &events, BPF_F_CURRENT_CPU, event,
@@ -650,24 +692,23 @@ int BPF_KPROBE(kprobe__do_coredump, const kernel_siginfo_t *siginfo)
     // CHECK_ERROR(BPF_CORE_READ_INTO(&vma, task, mm, mmap));
     // u32 path_size = CHECK_ERROR(vm_area_output(ctx, bpf_get_current_pid_tgid(), vma));
 
+    // bpf_tail_call_static(ctx, &prog_array_map, TAIL_CALL_ZERO);
 
+//     u32 zero = 0;
+//     struct path *paths = CHECK_PTR(bpf_map_lookup_elem(&path_percpu, &zero));
+//     if (!paths)
+//         return 0;
 
-    u32 zero = 0;
-    struct path *paths = CHECK_PTR(bpf_map_lookup_elem(&path_percpu, &zero));
-    if (!paths)
-        return 0;
+// #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 3, 0)
+//     #pragma unroll
+// #endif
+//     for (u32 path_i = 0; path_i < 14; path_i++)
+//     {
+//         // barrier();
+//         // struct path* path = bpf_map_lookup_elem(&path_percpu, &path_i);
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 3, 0)
-    #pragma unroll
-#endif
-    for (u32 path_i = 0; path_i < 14; path_i++)
-        // if  (path_i < path_size)
-    {
-        // barrier();
-        // struct path* path = bpf_map_lookup_elem(&path_percpu, &path_i);
-
-        CHECK_ERROR(path_output(ctx, &paths[path_i]));
-    }
+//         CHECK_ERROR(path_output(ctx, &paths[path_i]));
+//     }
 
     return 0;
 }
@@ -724,18 +765,7 @@ int raw_tracepoint__sys_exit(struct bpf_raw_tracepoint_args *ctx)
         CHECK_ERROR(BPF_CORE_READ_INTO(&vma, task, mm, mmap));
         CHECK_ERROR(vm_area_output(ctx, event.pid_tgid, vma));
 
-        u32 zero = 0;
-        struct path *paths = bpf_map_lookup_elem(&path_percpu, &zero);
-        if (!paths)
-            return -1;
-
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 3, 0)
-        #pragma unroll
-#endif
-        for (u32 i = 0; i < 2; i++)
-        {
-            path_output(ctx, &paths[i]);
-        }
+        bpf_tail_call_static(ctx, &prog_array_map, TAIL_CALL_ZERO);
     }
 
     return 0;

@@ -706,7 +706,7 @@ int main(int argc, char *argv[])
         return EXIT_FAILURE;
 
     int  error = 0;
-    bool disable_read = false;
+    bool disable_read = true;
     if  (disable_read)
     {
         if ((error = bpf_program__set_autoload(skeleton->progs.tracepoint__syscalls__sys_enter_read, false)) < 0)
