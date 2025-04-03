@@ -578,9 +578,6 @@ static __always_inline
 long vm_area_output(void *ctx, u64 pid_tgid,
                     const struct vm_area_struct* vma)   /* in */
 {
-    u32 path_i = 0;
-    struct path path_prev = {0};
-
     u32 zero = 0;
     struct vm_area_event* event = bpf_map_lookup_elem(&vm_area_buffer, &zero);
     if (!event)
@@ -594,12 +591,13 @@ long vm_area_output(void *ctx, u64 pid_tgid,
     event->pid_tgid      = pid_tgid;
     event->ktime         = bpf_ktime_get_ns();
 
-    u32 i = 0;
+    u32 i, path_i = 0;
+    struct dentry *prev_dentry = NULL;
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 3, 0)
     #pragma unroll
 #endif
-    for (; i < MAX_AREA - 1; i++)
+    for (i = 0; i < MAX_AREA - 1; i++)
     {
         barrier();
 
@@ -613,23 +611,21 @@ long vm_area_output(void *ctx, u64 pid_tgid,
         vma                     = BPF_CORE_READ(vma, vm_next);
 
         if (!bpf_map_lookup_elem(&path_map, &event->area[i].path) &&
-            event->area[i].path.dentry != path_prev.dentry)
-            // event->area[i].path.mnt    != path_prev.mnt)
+            prev_dentry    != event->area[i].path.dentry)
         {
-
-            paths[path_i] = event->area[i].path;
-            path_prev     = event->area[i].path;
-            path_i++;
+            prev_dentry     = event->area[i].path.dentry;
+            paths[path_i++] = event->area[i].path;
         }
     }
 
-    __builtin_memset(&event->area[i], 0, sizeof(struct vm_area));
+    event->area[i].vm_start = 0;
+    paths[path_i].mnt       = 0;
 
     CHECK_ERROR(bpf_perf_event_output(
         ctx, &events, BPF_F_CURRENT_CPU, event,
         offsetof(struct vm_area_event, area[i]) + sizeof(struct vm_area)));
 
-    return path_i;
+    return 0;
 }
 
 SEC("kprobe/do_coredump")
