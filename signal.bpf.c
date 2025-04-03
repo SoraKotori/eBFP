@@ -168,17 +168,14 @@ long read_path(char dst[MAX_ARG_LEN], const struct path *path)
 {
     struct dentry *dentry;
     bpf_core_read(&dentry, sizeof(dentry), &path->dentry);
-    // CHECK_ERROR(BPF_CORE_READ_INTO(&dentry, path, dentry));
 
     struct vfsmount *vfsmnt;
     bpf_core_read(&vfsmnt, sizeof(vfsmnt), &path->mnt);
-    // CHECK_ERROR(BPF_CORE_READ_INTO(&vfsmnt, path, mnt));
 
     struct mount *mnt = container_of(vfsmnt, struct mount, mnt);
 
     struct dentry *mnt_root;
     bpf_core_read(&mnt_root, sizeof(mnt_root), &vfsmnt->mnt_root);
-    // CHECK_ERROR(BPF_CORE_READ_INTO(&mnt_root, path, mnt, mnt_root));
 
     u32 index = MAX_ARG_LEN - MAX_NAME_LEN;
 
@@ -191,15 +188,12 @@ long read_path(char dst[MAX_ARG_LEN], const struct path *path)
         {
             struct mount *mnt_parent;
             bpf_core_read(&mnt_parent, sizeof(mnt_parent), &mnt->mnt_parent);
-            // CHECK_ERROR(BPF_CORE_READ_INTO(&mnt_parent, mnt, mnt_parent));
         
             if (mnt == mnt_parent)
                 break;
 
             bpf_core_read(&dentry, sizeof(dentry), &mnt->mnt_mountpoint);
-            // CHECK_ERROR(BPF_CORE_READ_INTO(&dentry, mnt, mnt_mountpoint));
             bpf_core_read(&mnt_root, sizeof(mnt_root), &mnt_parent->mnt.mnt_root);
-            // CHECK_ERROR(BPF_CORE_READ_INTO(&mnt_root, mnt_parent, mnt.mnt_root));
             mnt = mnt_parent;
 
             continue;
@@ -207,7 +201,6 @@ long read_path(char dst[MAX_ARG_LEN], const struct path *path)
 
         struct dentry *d_parent;
         bpf_core_read(&d_parent, sizeof(d_parent), &dentry->d_parent);
-        // CHECK_ERROR(BPF_CORE_READ_INTO(&d_parent, dentry, d_parent));
 
         // 在特殊的檔案系統中，如匿名 pipe 並不會經過 mnt_root，而會直接達到自身的 root
         if (dentry == d_parent)
@@ -215,11 +208,9 @@ long read_path(char dst[MAX_ARG_LEN], const struct path *path)
 
         const unsigned char *name;
         bpf_core_read(&name, sizeof(name), &dentry->d_name.name);
-        // CHECK_ERROR(BPF_CORE_READ_INTO(&name, dentry, d_name.name));
 
         u32 len;
         bpf_core_read(&len, sizeof(len), &dentry->d_name.len);
-        // CHECK_ERROR(BPF_CORE_READ_INTO(&len, dentry, d_name.len));
 
         index -= len + 1;
 
@@ -267,14 +258,67 @@ int tailcall_0(struct bpf_raw_tracepoint_args *ctx)
 #endif
     for (u32 path_i = 0; path_i < 14; path_i++)
     {
-        // barrier();
-
         if (paths[path_i].mnt == NULL)
             break;
         // struct path* path = bpf_map_lookup_elem(&path_percpu, &path_i);
 
         CHECK_ERROR(path_output(ctx, &paths[path_i]));
     }
+
+    return 0;
+}
+
+static __always_inline
+long vm_area_output(void *ctx, u64 pid_tgid,
+                    const struct vm_area_struct* vma)   /* in */
+{
+    u32 zero = 0;
+    struct vm_area_event* event = bpf_map_lookup_elem(&vm_area_buffer, &zero);
+    if (!event)
+        return -1;
+
+    struct path *paths = bpf_map_lookup_elem(&path_percpu, &zero);
+    if (!paths)
+        return -1;
+
+    event->base.event_id = EVENT_ID(vm_area_event);
+    event->pid_tgid      = pid_tgid;
+    event->ktime         = bpf_ktime_get_ns();
+
+    u32 i, path_i = 0;
+    struct dentry *prev_dentry = NULL;
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 3, 0)
+    #pragma unroll
+#endif
+    for (i = 0; i < MAX_AREA - 1; i++)
+    {
+        barrier();
+
+        if (!vma)
+            break;
+
+        event->area[i].vm_start = BPF_CORE_READ(vma, vm_start);
+        event->area[i].vm_end   = BPF_CORE_READ(vma, vm_end);
+        event->area[i].vm_pgoff = BPF_CORE_READ(vma, vm_pgoff);
+        event->area[i].path     = BPF_CORE_READ(vma, vm_file, f_path);
+        vma                     = BPF_CORE_READ(vma, vm_next);
+
+        if (event->area[i].path.dentry &&
+            !bpf_map_lookup_elem(&path_map, &event->area[i].path) &&
+            prev_dentry    != event->area[i].path.dentry)
+        {
+            prev_dentry     = event->area[i].path.dentry;
+            paths[path_i++] = event->area[i].path;
+        }
+    }
+
+    event->area[i].vm_start = 0;
+    paths[path_i].mnt       = NULL;
+
+    CHECK_ERROR(bpf_perf_event_output(
+        ctx, &events, BPF_F_CURRENT_CPU, event,
+        offsetof(struct vm_area_event, area[i]) + sizeof(struct vm_area)));
 
     return 0;
 }
@@ -611,61 +655,6 @@ int tracepoint__sched__sched_process_exit(struct trace_event_raw_sched_process_t
 
     CHECK_ERROR(bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU,
                                       &event, sizeof(event)));
-
-    return 0;
-}
-
-static __always_inline
-long vm_area_output(void *ctx, u64 pid_tgid,
-                    const struct vm_area_struct* vma)   /* in */
-{
-    u32 zero = 0;
-    struct vm_area_event* event = bpf_map_lookup_elem(&vm_area_buffer, &zero);
-    if (!event)
-        return -1;
-
-    struct path *paths = bpf_map_lookup_elem(&path_percpu, &zero);
-    if (!paths)
-        return -1;
-
-    event->base.event_id = EVENT_ID(vm_area_event);
-    event->pid_tgid      = pid_tgid;
-    event->ktime         = bpf_ktime_get_ns();
-
-    u32 i, path_i = 0;
-    struct dentry *prev_dentry = NULL;
-
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 3, 0)
-    #pragma unroll
-#endif
-    for (i = 0; i < MAX_AREA - 1; i++)
-    {
-        barrier();
-
-        if (!vma)
-            break;
-
-        event->area[i].vm_start = BPF_CORE_READ(vma, vm_start);
-        event->area[i].vm_end   = BPF_CORE_READ(vma, vm_end);
-        event->area[i].vm_pgoff = BPF_CORE_READ(vma, vm_pgoff);
-        event->area[i].path     = BPF_CORE_READ(vma, vm_file, f_path);
-        vma                     = BPF_CORE_READ(vma, vm_next);
-
-        if (event->area[i].path.dentry &&
-            !bpf_map_lookup_elem(&path_map, &event->area[i].path) &&
-            prev_dentry    != event->area[i].path.dentry)
-        {
-            prev_dentry     = event->area[i].path.dentry;
-            paths[path_i++] = event->area[i].path;
-        }
-    }
-
-    event->area[i].vm_start = 0;
-    paths[path_i].mnt       = NULL;
-
-    CHECK_ERROR(bpf_perf_event_output(
-        ctx, &events, BPF_F_CURRENT_CPU, event,
-        offsetof(struct vm_area_event, area[i]) + sizeof(struct vm_area)));
 
     return 0;
 }
