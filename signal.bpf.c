@@ -85,14 +85,14 @@ struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, MAX_ENTRIES);
     __type(key, struct path);
-    __type(value, char[MAX_ARG_LEN]);
+    __type(value, u32);
 } path_map SEC(".maps");
 
 struct {
     __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
     __uint(max_entries, 1);
     __type(key, u32);
-    __type(value, char[MAX_ARG_LEN]);
+    __type(value, struct path_event);
 } path_buffer SEC(".maps");
 
 struct {
@@ -263,18 +263,16 @@ static
 long path_output(void *ctx, const struct path *path)
 {
     u32 zero = 0;
-    char *buffer = bpf_map_lookup_elem(&path_buffer, &zero);
-    if  (!buffer)
-        return -1;
+    struct path_event* event = bpf_map_lookup_elem(&path_buffer, &zero);
+    if  (!event)
+        return 0;
 
-    INIT_EVENT(event, path_event,
-        .index = CHECK_ERROR(read_path(buffer, path)),
-        .path  = *path
-    );
+    event->base.event_id = EVENT_ID(path_event);
+    event->index         = CHECK_ERROR(read_path(event->name, path));
+    event->path          = *path;
 
-    CHECK_ERROR(bpf_map_update_elem(&path_map, path, buffer, BPF_ANY));
     CHECK_ERROR(bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU,
-                                      &event, sizeof(event)));
+                                      event, sizeof(*event)));
     return 0;
 }
 
@@ -319,7 +317,6 @@ int vm_area_tailcall(struct bpf_raw_tracepoint_args *ctx)
 
     u32 i, path_i = argument->path_i;
     struct vm_area_struct* vma = argument->vma;
-    struct dentry *prev_dentry = NULL;
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 3, 0)
     #pragma unroll
@@ -338,10 +335,8 @@ int vm_area_tailcall(struct bpf_raw_tracepoint_args *ctx)
         vma                     = BPF_CORE_READ(vma, vm_next);
 
         if (event->area[i].path.dentry &&
-            !bpf_map_lookup_elem(&path_map, &event->area[i].path) &&
-            prev_dentry    != event->area[i].path.dentry)
+            bpf_map_update_elem(&path_map, &event->area[i].path, &zero, BPF_NOEXIST) == 0)
         {
-            prev_dentry     = event->area[i].path.dentry;
             paths[path_i & (MAX_AREA - 1)] = event->area[i].path;
             path_i++;
         }
@@ -588,7 +583,7 @@ int tracepoint__syscalls__sys_exit_read(struct trace_event_raw_sys_exit *ctx)
     CHECK_ERROR(bpf_map_delete_elem(&read_map, &pid_tgid));
 
     // 取得當前 task 結構的指標
-    struct task_struct *task = (struct task_struct *)CHECK_PTR(bpf_get_current_task());
+    struct task_struct *task = (struct task_struct *)bpf_get_current_task();
 
     // 透過 BPF_CORE_READ_INTO 取得 task 結構中 files -> fdt -> fd 的指標
     struct file **fd = NULL;
@@ -601,9 +596,13 @@ int tracepoint__syscalls__sys_exit_read(struct trace_event_raw_sys_exit *ctx)
     // 讀取 file 結構中 f_path 欄位
     CHECK_ERROR(BPF_CORE_READ_INTO(&event.exit.path, file, f_path));
 
-    if (!bpf_map_lookup_elem(&path_map, &event.exit.path))
-           CHECK_ERROR(path_output(ctx, &event.exit.path));
-    
+    const u32 zero = 0;
+    long error = bpf_map_update_elem(&path_map, &event.exit.path, &zero, BPF_NOEXIST);
+    if  (error == 0)
+        CHECK_ERROR(path_output(ctx, &event.exit.path));
+    else if (error != -17) // EEXIST (File exists)
+        CHECK_ERROR(error);
+
     // ------------------------------------------------------------
 
     // ------------------------------------------------------------
@@ -626,7 +625,6 @@ int tracepoint__syscalls__sys_exit_read(struct trace_event_raw_sys_exit *ctx)
     // 每個片段包含部分讀取到的使用者資料（透過 bpf_probe_read_user）
     // ------------------------------------------------------------
 
-    const u32 zero = 0;
     u32 *context = CHECK_PTR(bpf_map_lookup_elem(&read_content, &zero));
     if (!context)
         return 0;
@@ -681,7 +679,7 @@ int tracepoint__sched__sched_process_exit(struct trace_event_raw_sched_process_t
 
     bpf_map_delete_elem(&execve_map, &event.pid_tgid);
     
-    struct task_struct *task = (struct task_struct *)CHECK_PTR(bpf_get_current_task());
+    struct task_struct *task = (struct task_struct *)bpf_get_current_task();
 
     CHECK_ERROR(BPF_CORE_READ_INTO(&event.exit_code, task, exit_code));
 
@@ -707,7 +705,7 @@ int BPF_KPROBE(kprobe__do_coredump, const kernel_siginfo_t *siginfo)
 
 
 
-    // struct task_struct *task = (struct task_struct *)CHECK_PTR(bpf_get_current_task());
+    // struct task_struct *task = (struct task_struct *)bpf_get_current_task();
 
     // struct vm_area_struct *vma = NULL;
     // CHECK_ERROR(BPF_CORE_READ_INTO(&vma, task, mm, mmap));
@@ -787,7 +785,7 @@ int raw_tracepoint__sys_exit(struct bpf_raw_tracepoint_args *ctx)
         vm_area_event->pid_tgid      = event.pid_tgid;
         vm_area_event->ktime         = bpf_ktime_get_ns();
 
-        struct task_struct *task = (struct task_struct *)CHECK_PTR(bpf_get_current_task());
+        struct task_struct *task = (struct task_struct *)bpf_get_current_task();
     
         struct vm_area_argument argument =
         {

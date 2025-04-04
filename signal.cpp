@@ -230,7 +230,7 @@ void print_stack_trace(blaze_normalizer* normalizer,
     //     std::println("blaze_symbolize_process_abs_addrs: {}", blaze_err_str(blaze_err_last()));
 
     //     for(std::size_t i = 0; i < std::size(addrs); i++)
-    //         std::println("    #{:<2} {:#018x}", i, addrs[i]);
+    //         std::println("    #{:<2} {:#014x}", i, addrs[i]);
 
     //     return;
     // }
@@ -240,14 +240,14 @@ void print_stack_trace(blaze_normalizer* normalizer,
 
     // for(std::size_t i = 0; i < std::size(addrs); i++)
     // {
-    //     std::print("    #{:<2} {:#018x} in {:<20}",
+    //     std::print("    #{:<2} {:#014x} in {:<20}",
     //         i, addrs[i],
     //         syms->syms[i].name ? syms->syms[i].name : "null");
 
     //     if (syms->syms[i].reason)
     //         std::println(" {}", blaze_symbolize_reason_str(syms->syms[i].reason));
     //     else
-    //         std::println(" sym_addr: {:#018x}, sym_off: {:#010x}, name: {}:{}:{}",
+    //         std::println(" sym_addr: {:#014x}, sym_off: {:#010x}, name: {}:{}:{}",
     //             syms->syms[i].addr,
     //             syms->syms[i].offset,
     //             syms->syms[i].code_info.file ? syms->syms[i].code_info.file : "null",
@@ -413,12 +413,12 @@ public:
 class sys_exit_read_handler
 {
     std::unordered_map<__u64, read_argument>& map_;
-    std::unordered_map<path, std::string, path_hash, path_equal>& path_map_;
+    std::unordered_map<path, std::string, path_hash, path_equal>& names_map_;
 
 public:
-    sys_exit_read_handler(decltype(map_) map, decltype(path_map_) path_map) :
+    sys_exit_read_handler(decltype(map_) map, decltype(names_map_) names_map) :
         map_{map},
-        path_map_{path_map}
+        names_map_{names_map}
     {}
 
     void operator()(int cpu, void *data, __u32 size)
@@ -458,7 +458,7 @@ public:
             event->fd,
             permission,
             mode,
-            path_map_[event->path]);
+            names_map_[event->path]);
 
         if (event->ret >= 0)
         {
@@ -469,12 +469,12 @@ public:
 
 class path_handler
 {
-    std::unordered_map<path, std::string, path_hash, path_equal>& map_;
+    std::unordered_map<path, std::string, path_hash, path_equal>& names_map_;
     bpf_map *path_map_;
 
 public:
-    path_handler(decltype(map_) map, decltype(path_map_) path_map) :
-        map_{map},
+    path_handler(decltype(names_map_) map, decltype(path_map_) path_map) :
+        names_map_{map},
         path_map_{path_map}
     {}
 
@@ -482,34 +482,21 @@ public:
     {
         auto event = static_cast<path_event*>(data);
 
-        std::array<char, MAX_ARG_LEN> buffer;
-        auto error = bpf_map__lookup_elem(path_map_,
-                                          &event->path, sizeof(event->path),
-                                          std::data(buffer), sizeof(buffer), 0);
-        if  (error < 0)
-        {
-            std::println("error: bpf_map__lookup_elem < 0");
-            return;
-        }
-
-        // auto [_, inserted] = map_.insert_or_assign(
+        // auto [_, inserted] = names_map_.insert_or_assign(
         //     event->path,
         //     std::string{std::begin(buffer) + event->index,
         //                 std::begin(buffer) + MAX_ARG_LEN - MAX_NAME_LEN});
 
-        std::string new_path
-            {std::begin(buffer) + event->index,
-            std::begin(buffer) + MAX_ARG_LEN - MAX_NAME_LEN};
+        std::string new_name{
+            event->name + event->index,
+            event->name + MAX_ARG_LEN - MAX_NAME_LEN};
 
-        auto [_, inserted] = map_.try_emplace(
-            event->path,
-            new_path);
-
-        if (inserted == false)
+        auto [iterator, inserted] = names_map_.try_emplace(event->path, new_name);
+        if   (inserted == false)
         {
             std::println("error: insert_or_assign.inserted == false\n"
                          "    old_path: {}\n"
-                         "    new_path: {}", _->second, new_path);
+                         "    new_path: {}", iterator->second, new_name);
         }
     }
 };
@@ -517,13 +504,13 @@ public:
 class vm_area_handler
 {
     std::unordered_map<__u64, std::vector<vm_area_event::vm_area>>& map_;
-    std::unordered_map<path,  std::string, path_hash, path_equal>& path_map_;
+    std::unordered_map<path,  std::string, path_hash, path_equal>& names_map_;
     std::unordered_map<int, __u64> ktime_map_;
 
 public:
-    vm_area_handler(decltype(map_) map, decltype(path_map_) path_map) :
+    vm_area_handler(decltype(map_) map, decltype(names_map_) names_map) :
         map_{map},
-        path_map_{path_map}
+        names_map_{names_map}
     {}
 
     void operator()(int cpu, void *data, __u32 size)
@@ -548,18 +535,18 @@ public:
                     event->pid,
                     areas.size());
 
-                // for (const auto& entry : areas)
-                // {
-                //     auto find = path_map_.find(entry.path);
+                for (const auto& entry : areas)
+                {
+                    auto find = names_map_.find(entry.path);
 
-                //     std::println("    {:#018x} {:#018x} {:#010x} {:p} {:p} name: {}",
-                //     entry.vm_start,
-                //     entry.vm_end,
-                //     entry.vm_pgoff * 4096,
-                //     entry.path.dentry,
-                //     entry.path.mnt,
-                //     find == std::end(path_map_) ? std::string_view{} : find->second);
-                // }
+                    std::println("    {:#014x} {:#014x} {:#010x} {:p} {:p} name: {}",
+                    entry.vm_start,
+                    entry.vm_end,
+                    entry.vm_pgoff * 4096,
+                    entry.path.dentry,
+                    entry.path.mnt,
+                    find == std::end(names_map_) ? std::string_view{} : find->second);
+                }
 
                 break;
             }
@@ -617,7 +604,7 @@ public:
             if (address == 0)
                 break;
 
-            std::println("    #{} {:#018x}", i, address);
+            std::println("    #{} {:#014x}", i, address);
         }
     }
 };
@@ -840,7 +827,7 @@ int main(int argc, char *argv[])
     std::unordered_map<__u64, kill_argument> kill_map;
     std::unordered_map<__u64, read_argument> read_map;
     std::unordered_map<__u64, std::vector<vm_area_event::vm_area>> vm_area_map;
-    std::unordered_map<path,  std::string, path_hash, path_equal> path_map;
+    std::unordered_map<path,  std::string, path_hash, path_equal> names_map;
     
     event_handler<EVENT_MAX> handler;
     handler[EVENT_ID(sys_enter_execve_event)]   = sys_enter_execve_handler{execve_map};
@@ -848,9 +835,9 @@ int main(int argc, char *argv[])
     handler[EVENT_ID(sys_enter_kill_event)]     = sys_enter_kill_handler{kill_map};
     handler[EVENT_ID(sys_exit_kill_event)]      = sys_exit_kill_handler{kill_map};
     handler[EVENT_ID(sys_enter_read_event)]     = sys_enter_read_handler{read_map};
-    handler[EVENT_ID(sys_exit_read_event)]      = sys_exit_read_handler{read_map, path_map};
-    handler[EVENT_ID(path_event)]               = path_handler{path_map, skeleton->maps.path_map};
-    handler[EVENT_ID(vm_area_event)]            = vm_area_handler{vm_area_map, path_map};
+    handler[EVENT_ID(sys_exit_read_event)]      = sys_exit_read_handler{read_map, names_map};
+    handler[EVENT_ID(path_event)]               = path_handler{names_map, skeleton->maps.path_map};
+    handler[EVENT_ID(vm_area_event)]            = vm_area_handler{vm_area_map, names_map};
     handler[EVENT_ID(sched_process_exit_event)] = handle_sched_process_exit;
     handler[EVENT_ID(do_coredump_event)]        = do_coredump_handler{symbolizer.get(), skeleton->maps.stack_trace};
     handler[EVENT_ID(sys_exit_event)]           = sys_exit_handler{normalizer.get(), symbolizer.get(), skeleton->maps.stack_trace};

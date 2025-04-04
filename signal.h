@@ -109,8 +109,9 @@ struct path_event
 {
     struct event_base base;
 
-    __u32 index;
     struct path path;
+    __u32 index;
+    char name[MAX_ARG_LEN];
 };
 
 struct vm_area_event
