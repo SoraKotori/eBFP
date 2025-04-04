@@ -279,22 +279,33 @@ long path_output(void *ctx, const struct path *path)
 SEC("raw_tracepoint")
 int path_tailcall(struct bpf_raw_tracepoint_args *ctx)
 {
-    u32 zero = 0;
+    const u32 zero = 0;
+
+    struct vm_area_argument *argument = CHECK_PTR(bpf_map_lookup_elem(&vm_area_map, &zero));
+    if (!argument)
+        return 0;
+
     struct path *paths = CHECK_PTR(bpf_map_lookup_elem(&path_percpu, &zero));
     if (!paths)
         return 0;
 
+    u32 path_i = argument->path_i;
+
 #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 3, 0)
     #pragma unroll
 #endif
-    for (u32 path_i = 0; path_i < 14; path_i++)
+    for (u32 i = 0; i < 14; i++)
     {
-        if (paths[path_i].mnt == NULL)
+        if (path_i == 0)
             break;
-        // struct path* path = bpf_map_lookup_elem(&path_percpu, &path_i);
 
-        CHECK_ERROR(path_output(ctx, &paths[path_i]));
+        path_i = (path_i - 1) & (MAX_AREA - 1);
+        CHECK_ERROR(path_output(ctx, &paths[i]));
+
+        // struct path* path = bpf_map_lookup_elem(&path_percpu, &path_i);
     }
+
+    argument->path_i = path_i;
 
     return 0;
 }
@@ -302,7 +313,8 @@ int path_tailcall(struct bpf_raw_tracepoint_args *ctx)
 SEC("raw_tracepoint")
 int vm_area_tailcall(struct bpf_raw_tracepoint_args *ctx)
 {
-    u32 zero = 0;
+    const u32 zero = 0;
+
     struct vm_area_event* event = CHECK_PTR(bpf_map_lookup_elem(&vm_area_buffer, &zero));
     if (!event)
         return 0;
@@ -328,39 +340,45 @@ int vm_area_tailcall(struct bpf_raw_tracepoint_args *ctx)
         if (!vma)
             break;
 
-        event->area[i].vm_start = BPF_CORE_READ(vma, vm_start);
-        event->area[i].vm_end   = BPF_CORE_READ(vma, vm_end);
-        event->area[i].vm_pgoff = BPF_CORE_READ(vma, vm_pgoff);
-        event->area[i].path     = BPF_CORE_READ(vma, vm_file, f_path);
-        vma                     = BPF_CORE_READ(vma, vm_next);
+        struct vm_area *area = &event->area[i];
 
-        if (event->area[i].path.dentry &&
-            bpf_map_update_elem(&path_map, &event->area[i].path, &zero, BPF_NOEXIST) == 0)
+        // area->vm_start = BPF_CORE_READ(vma, vm_start);
+        // area->vm_end   = BPF_CORE_READ(vma, vm_end);
+        // area->vm_pgoff = BPF_CORE_READ(vma, vm_pgoff);
+        // area->path     = BPF_CORE_READ(vma, vm_file, f_path);
+        // vma            = BPF_CORE_READ(vma, vm_next);
+
+        // bpf_core_read(&area->vm_start, sizeof(area->vm_start), &vma->vm_start);
+        // bpf_core_read(&area->vm_end,   sizeof(area->vm_end),   &vma->vm_end);
+        // bpf_core_read(&area->vm_pgoff, sizeof(area->vm_pgoff), &vma->vm_pgoff);
+        // bpf_core_read(&area->path,     sizeof(area->path),     &vma->vm_file->f_path);
+        // bpf_core_read(&vma,            sizeof(vma),            &vma->vm_next);
+
+        BPF_CORE_READ_INTO(&area->vm_start, vma, vm_start);
+        BPF_CORE_READ_INTO(&area->vm_end,   vma, vm_end);
+        BPF_CORE_READ_INTO(&area->vm_pgoff, vma, vm_pgoff);
+        BPF_CORE_READ_INTO(&area->path,     vma, vm_file, f_path);
+        BPF_CORE_READ_INTO(&vma,            vma, vm_next);
+
+        if (area->path.dentry &&
+            bpf_map_update_elem(&path_map, &area->path, &zero, BPF_NOEXIST) == 0)
         {
-            paths[path_i & (MAX_AREA - 1)] = event->area[i].path;
+            paths[path_i & (MAX_AREA - 1)] = area->path;
             path_i++;
         }
     }
 
-    if (i < MAX_AREA)
-    {
-        event->area[i].vm_start = 0;
-        CHECK_ERROR(bpf_perf_event_output(
-            ctx, &events, BPF_F_CURRENT_CPU, event,
-            offsetof(struct vm_area_event, area[i]) + sizeof(struct vm_area)));
-    
-        paths[path_i & (MAX_AREA - 1)].mnt = NULL;
-        bpf_tail_call_static(ctx, &prog_array_map, TAIL_CALL_ONE);
-    }
-    else
-    {
-        CHECK_ERROR(bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU,
-                                          event, sizeof(*event)));
+    event->area_size = i;
+    CHECK_ERROR(bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU,
+                                      event, offsetof(struct vm_area_event, area[i])));    
 
-        argument->path_i = path_i;
-        argument->vma = vma;
+    argument->path_i = path_i;
+    argument->vma = vma;
+
+    if (i < MAX_AREA)
+        bpf_tail_call_static(ctx, &prog_array_map, TAIL_CALL_ONE);
+    else
         bpf_tail_call_static(ctx, &prog_array_map, TAIL_CALL_ZERO);
-    }
 
     bpf_printk("bpf_tail_call_static error");
     return 0;

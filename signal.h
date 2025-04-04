@@ -120,6 +120,8 @@ struct vm_area_event
 
     PID_TGID_UNION;
     __u64 ktime;
+    __u32 area_size;
+
     struct vm_area
     {
         unsigned long vm_start;
