@@ -153,7 +153,6 @@ struct sys_exit_event
     PID_TGID_UNION;
     long syscall_nr;
     long ret;
-    __u32 stack_id;
 };
 
 struct self_t

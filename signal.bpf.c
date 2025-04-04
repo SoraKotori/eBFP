@@ -102,6 +102,19 @@ struct {
     __type(value, struct path[MAX_AREA]);
 } path_percpu SEC(".maps");
 
+struct vm_area_argument
+{
+    u32 path_i;
+    struct vm_area_struct* vma;
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, u32);
+    __type(value, struct vm_area_argument);
+} vm_area_map SEC(".maps");
+
 struct {
     __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
     __uint(max_entries, 1);
@@ -114,6 +127,26 @@ struct {
 	__uint(key_size, sizeof(u32));
 	__uint(value_size, sizeof(int));
 } events SEC(".maps");
+
+#define TAIL_CALL_ZERO 0
+#define TAIL_CALL_ONE 1
+
+int vm_area_tailcall(struct bpf_raw_tracepoint_args*);
+int path_tailcall(struct bpf_raw_tracepoint_args*);
+
+struct {
+    __uint(type, BPF_MAP_TYPE_PROG_ARRAY);
+    __uint(max_entries, 2);
+    __uint(key_size, sizeof(u32));
+    __array(values, int (void *));
+} prog_array_map SEC(".maps") =
+{
+    .values =
+    {
+        [TAIL_CALL_ZERO] = (void *)&vm_area_tailcall,
+        [TAIL_CALL_ONE]  = (void *)&path_tailcall
+    },
+};
 
 #define INIT_EVENT(name, EVENT_TYPE, ...) \
 struct EVENT_TYPE name =                  \
@@ -246,7 +279,7 @@ long path_output(void *ctx, const struct path *path)
 }
 
 SEC("raw_tracepoint")
-int tailcall_0(struct bpf_raw_tracepoint_args *ctx)
+int path_tailcall(struct bpf_raw_tracepoint_args *ctx)
 {
     u32 zero = 0;
     struct path *paths = CHECK_PTR(bpf_map_lookup_elem(&path_percpu, &zero));
@@ -268,30 +301,30 @@ int tailcall_0(struct bpf_raw_tracepoint_args *ctx)
     return 0;
 }
 
-static __always_inline
-long vm_area_output(void *ctx, u64 pid_tgid,
-                    const struct vm_area_struct* vma)   /* in */
+SEC("raw_tracepoint")
+int vm_area_tailcall(struct bpf_raw_tracepoint_args *ctx)
 {
     u32 zero = 0;
-    struct vm_area_event* event = bpf_map_lookup_elem(&vm_area_buffer, &zero);
+    struct vm_area_event* event = CHECK_PTR(bpf_map_lookup_elem(&vm_area_buffer, &zero));
     if (!event)
-        return -1;
+        return 0;
 
-    struct path *paths = bpf_map_lookup_elem(&path_percpu, &zero);
+    struct vm_area_argument *argument = CHECK_PTR(bpf_map_lookup_elem(&vm_area_map, &zero));
+    if (!argument)
+        return 0;
+    
+    struct path *paths = CHECK_PTR(bpf_map_lookup_elem(&path_percpu, &zero));
     if (!paths)
-        return -1;
+        return 0;
 
-    event->base.event_id = EVENT_ID(vm_area_event);
-    event->pid_tgid      = pid_tgid;
-    event->ktime         = bpf_ktime_get_ns();
-
-    u32 i, path_i = 0;
+    u32 i, path_i = argument->path_i;
+    struct vm_area_struct* vma = argument->vma;
     struct dentry *prev_dentry = NULL;
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 3, 0)
     #pragma unroll
 #endif
-    for (i = 0; i < MAX_AREA - 1; i++)
+    for (i = 0; i < MAX_AREA; i++)
     {
         barrier();
 
@@ -309,35 +342,34 @@ long vm_area_output(void *ctx, u64 pid_tgid,
             prev_dentry    != event->area[i].path.dentry)
         {
             prev_dentry     = event->area[i].path.dentry;
-            paths[path_i++] = event->area[i].path;
+            paths[path_i & (MAX_AREA - 1)] = event->area[i].path;
+            path_i++;
         }
     }
 
-    event->area[i].vm_start = 0;
-    paths[path_i].mnt       = NULL;
+    if (i < MAX_AREA)
+    {
+        event->area[i].vm_start = 0;
+        CHECK_ERROR(bpf_perf_event_output(
+            ctx, &events, BPF_F_CURRENT_CPU, event,
+            offsetof(struct vm_area_event, area[i]) + sizeof(struct vm_area)));
+    
+        paths[path_i & (MAX_AREA - 1)].mnt = NULL;
+        bpf_tail_call_static(ctx, &prog_array_map, TAIL_CALL_ONE);
+    }
+    else
+    {
+        CHECK_ERROR(bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU,
+                                          event, sizeof(*event)));
 
-    CHECK_ERROR(bpf_perf_event_output(
-        ctx, &events, BPF_F_CURRENT_CPU, event,
-        offsetof(struct vm_area_event, area[i]) + sizeof(struct vm_area)));
+        argument->path_i = path_i;
+        argument->vma = vma;
+        bpf_tail_call_static(ctx, &prog_array_map, TAIL_CALL_ZERO);
+    }
 
+    bpf_printk("bpf_tail_call_static error");
     return 0;
 }
-
-#define TAIL_CALL_ZERO 0
-#define TAIL_CALL_ONE 1
-
-struct {
-    __uint(type, BPF_MAP_TYPE_PROG_ARRAY);
-    __uint(max_entries, 1);
-    __uint(key_size, sizeof(u32));
-    __array(values, int (void *));
-} prog_array_map SEC(".maps") =
-{
-    .values =
-    {
-        [TAIL_CALL_ZERO] = (void *)&tailcall_0
-    },
-};
 
 __always_inline
 int pattern_strcmp(const char *const pattern, const char *const arg)
@@ -722,7 +754,7 @@ int raw_tracepoint__sys_exit(struct bpf_raw_tracepoint_args *ctx)
         .tgid = nsdata.tgid
     );
 
-    if (self->pid_tgid == event.pid_tgid)
+    if (event.pid_tgid == self->pid_tgid)
         return 0;
 
     struct pt_regs *regs = (struct pt_regs *)ctx->args[0];
@@ -741,20 +773,34 @@ int raw_tracepoint__sys_exit(struct bpf_raw_tracepoint_args *ctx)
     if (syscell_idx < MAX_SYSCALL &&
         ret_map[syscell_idx] & syscell_bit)
     {
-        event.stack_id = CHECK_ERROR(bpf_get_stackid(ctx, &stack_trace, BPF_F_USER_STACK));
-
         CHECK_ERROR(bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU,
                                           &event, sizeof(event)));
 
 
-    
+
+        u32 zero = 0;
+        struct vm_area_event* vm_area_event = CHECK_PTR(bpf_map_lookup_elem(&vm_area_buffer, &zero));
+        if (!vm_area_event)
+            return 0;
+
+        vm_area_event->base.event_id = EVENT_ID(vm_area_event);
+        vm_area_event->pid_tgid      = event.pid_tgid;
+        vm_area_event->ktime         = bpf_ktime_get_ns();
+
         struct task_struct *task = (struct task_struct *)CHECK_PTR(bpf_get_current_task());
     
-        struct vm_area_struct *vma = NULL;
-        CHECK_ERROR(BPF_CORE_READ_INTO(&vma, task, mm, mmap));
-        CHECK_ERROR(vm_area_output(ctx, event.pid_tgid, vma));
+        struct vm_area_argument argument =
+        {
+            .path_i = 0,
+            .vma    = BPF_CORE_READ(task, mm, mmap)
+        };
+
+        CHECK_ERROR(bpf_map_update_elem(&vm_area_map, &zero, &argument, BPF_ANY));
 
         bpf_tail_call_static(ctx, &prog_array_map, TAIL_CALL_ZERO);
+
+        bpf_printk("bpf_tail_call_static error");
+        // event.stack_id = CHECK_ERROR(bpf_get_stackid(ctx, &stack_trace, BPF_F_USER_STACK));
     }
 
     return 0;

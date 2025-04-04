@@ -492,14 +492,24 @@ public:
             return;
         }
 
-        auto [_, inserted] = map_.insert_or_assign(
+        // auto [_, inserted] = map_.insert_or_assign(
+        //     event->path,
+        //     std::string{std::begin(buffer) + event->index,
+        //                 std::begin(buffer) + MAX_ARG_LEN - MAX_NAME_LEN});
+
+        std::string new_path
+            {std::begin(buffer) + event->index,
+            std::begin(buffer) + MAX_ARG_LEN - MAX_NAME_LEN};
+
+        auto [_, inserted] = map_.try_emplace(
             event->path,
-            std::string{std::begin(buffer) + event->index,
-                        std::begin(buffer) + MAX_ARG_LEN - MAX_NAME_LEN});
+            new_path);
 
         if (inserted == false)
         {
-            std::println("error: insert_or_assign.inserted == false");
+            std::println("error: insert_or_assign.inserted == false\n"
+                         "    old_path: {}\n"
+                         "    new_path: {}", _->second, new_path);
         }
     }
 };
@@ -538,16 +548,19 @@ public:
                     event->pid,
                     areas.size());
 
-                for (const auto& entry : areas)
-                {
-                    std::println("    {:#018x} {:#018x} {:#010x} {:p} {:p} name: {}",
-                    entry.vm_start,
-                    entry.vm_end,
-                    entry.vm_pgoff * 4096,
-                    entry.path.dentry,
-                    entry.path.mnt,
-                    path_map_[entry.path]);
-                }
+                // for (const auto& entry : areas)
+                // {
+                //     auto find = path_map_.find(entry.path);
+
+                //     std::println("    {:#018x} {:#018x} {:#010x} {:p} {:p} name: {}",
+                //     entry.vm_start,
+                //     entry.vm_end,
+                //     entry.vm_pgoff * 4096,
+                //     entry.path.dentry,
+                //     entry.path.mnt,
+                //     find == std::end(path_map_) ? std::string_view{} : find->second);
+                // }
+
                 break;
             }
             
@@ -630,21 +643,39 @@ public:
             event->tgid,
             event->pid,
             event->ret,
-            event->syscall_nr
-        );
+            event->syscall_nr);
+    }
+};
 
-        std::array<__u64, PERF_MAX_STACK_DEPTH> stack;
-        int error = bpf_map__lookup_elem(stack_trace_,
-                                         &event->stack_id, sizeof(event->stack_id),
-                                         std::data(stack), sizeof(stack), 0);
-        if (error < 0)
-            return;
+class stack_handler
+{
+    blaze_normalizer* normalizer_;
+    blaze_symbolizer* symbolizer_;
+    bpf_map* stack_trace_;
+
+public:
+    stack_handler(blaze_normalizer* normalizer, blaze_symbolizer* symbolizer, bpf_map* stack_trace) :
+        normalizer_{normalizer},
+        symbolizer_{symbolizer},
+        stack_trace_{stack_trace}
+    {}
+
+    void operator()(int cpu, void *data, __u32 size)
+    {
+        // auto event = static_cast<sys_exit_event*>(data);
+
+        // std::array<__u64, PERF_MAX_STACK_DEPTH> stack;
+        // int error = bpf_map__lookup_elem(stack_trace_,
+        //                                  &event->stack_id, sizeof(event->stack_id),
+        //                                  std::data(stack), sizeof(stack), 0);
+        // if (error < 0)
+        //     return;
         
-        std::span<decltype(stack)::value_type> addrs{
-            std::begin(stack),
-            std::ranges::find(stack, 0)};
+        // std::span<decltype(stack)::value_type> addrs{
+        //     std::begin(stack),
+        //     std::ranges::find(stack, 0)};
 
-        print_stack_trace(normalizer_, symbolizer_, event->tgid, addrs);
+        // print_stack_trace(normalizer_, symbolizer_, event->tgid, addrs);
     }
 };
 
@@ -656,7 +687,6 @@ class event_handler
     void handle_event(int cpu, void *data, __u32 size)
     {
         auto event = static_cast<event_base*>(data);
-
         if (handlers_[event->event_id])
             handlers_[event->event_id](cpu, data, size);
     }
