@@ -18,6 +18,7 @@
     MAKE_EVENT_ID(sys_exit_read_event) \
     MAKE_EVENT_ID(path_event) \
     MAKE_EVENT_ID(vm_area_event) \
+    MAKE_EVENT_ID(stack_event) \
     MAKE_EVENT_ID(sched_process_exit_event) \
     MAKE_EVENT_ID(do_coredump_event) \
     MAKE_EVENT_ID(sys_exit_event)
@@ -129,6 +130,14 @@ struct vm_area_event
         unsigned long vm_pgoff;
         struct path path;
     } area[MAX_AREA];
+};
+
+struct stack_event
+{
+    struct event_base base;
+
+    PID_TGID_UNION;
+    __u32 stack_id;
 };
 
 struct sched_process_exit_event

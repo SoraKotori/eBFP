@@ -130,13 +130,15 @@ struct {
 
 #define TAIL_CALL_ZERO 0
 #define TAIL_CALL_ONE 1
+#define TAIL_CALL_TWO 2
 
 int vm_area_tailcall(struct bpf_raw_tracepoint_args*);
 int path_tailcall(struct bpf_raw_tracepoint_args*);
+int stack_tailcall(struct bpf_raw_tracepoint_args*);
 
 struct {
     __uint(type, BPF_MAP_TYPE_PROG_ARRAY);
-    __uint(max_entries, 2);
+    __uint(max_entries, 3);
     __uint(key_size, sizeof(u32));
     __array(values, int (void *));
 } prog_array_map SEC(".maps") =
@@ -144,7 +146,8 @@ struct {
     .values =
     {
         [TAIL_CALL_ZERO] = (void *)&vm_area_tailcall,
-        [TAIL_CALL_ONE]  = (void *)&path_tailcall
+        [TAIL_CALL_ONE]  = (void *)&path_tailcall,
+        [TAIL_CALL_TWO]  = (void *)&stack_tailcall
     },
 };
 
@@ -307,6 +310,33 @@ int path_tailcall(struct bpf_raw_tracepoint_args *ctx)
 
     argument->path_i = path_i;
 
+    if (path_i)
+        bpf_tail_call_static(ctx, &prog_array_map, TAIL_CALL_ONE);
+    else
+        bpf_tail_call_static(ctx, &prog_array_map, TAIL_CALL_TWO);
+
+    bpf_printk("bpf_tail_call_static error");
+    return 0;
+}
+
+SEC("raw_tracepoint")
+int stack_tailcall(struct bpf_raw_tracepoint_args* ctx)
+{
+    const u32 zero = 0;
+
+    struct vm_area_event* vm_area_event = CHECK_PTR(bpf_map_lookup_elem(&vm_area_buffer, &zero));
+    if (!vm_area_event)
+        return 0;
+
+    INIT_EVENT(event, stack_event,
+        .pid_tgid = vm_area_event->pid_tgid,
+        .stack_id = CHECK_ERROR(bpf_get_stackid(ctx, &stack_trace, BPF_F_USER_STACK |
+                                                                   BPF_F_REUSE_STACKID))
+    );
+
+    CHECK_ERROR(bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU,
+                                      &event, sizeof(event)));
+
     return 0;
 }
 
@@ -342,23 +372,23 @@ int vm_area_tailcall(struct bpf_raw_tracepoint_args *ctx)
 
         struct vm_area *area = &event->area[i];
 
-        // area->vm_start = BPF_CORE_READ(vma, vm_start);
-        // area->vm_end   = BPF_CORE_READ(vma, vm_end);
-        // area->vm_pgoff = BPF_CORE_READ(vma, vm_pgoff);
-        // area->path     = BPF_CORE_READ(vma, vm_file, f_path);
-        // vma            = BPF_CORE_READ(vma, vm_next);
+        area->vm_start = BPF_CORE_READ(vma, vm_start);
+        area->vm_end   = BPF_CORE_READ(vma, vm_end);
+        area->vm_pgoff = BPF_CORE_READ(vma, vm_pgoff);
+        area->path     = BPF_CORE_READ(vma, vm_file, f_path);
+        vma            = BPF_CORE_READ(vma, vm_next);
+
+        // BPF_CORE_READ_INTO(&area->vm_start, vma, vm_start);
+        // BPF_CORE_READ_INTO(&area->vm_end,   vma, vm_end);
+        // BPF_CORE_READ_INTO(&area->vm_pgoff, vma, vm_pgoff);
+        // BPF_CORE_READ_INTO(&area->path,     vma, vm_file, f_path);
+        // BPF_CORE_READ_INTO(&vma,            vma, vm_next);
 
         // bpf_core_read(&area->vm_start, sizeof(area->vm_start), &vma->vm_start);
         // bpf_core_read(&area->vm_end,   sizeof(area->vm_end),   &vma->vm_end);
         // bpf_core_read(&area->vm_pgoff, sizeof(area->vm_pgoff), &vma->vm_pgoff);
         // bpf_core_read(&area->path,     sizeof(area->path),     &vma->vm_file->f_path);
         // bpf_core_read(&vma,            sizeof(vma),            &vma->vm_next);
-
-        BPF_CORE_READ_INTO(&area->vm_start, vma, vm_start);
-        BPF_CORE_READ_INTO(&area->vm_end,   vma, vm_end);
-        BPF_CORE_READ_INTO(&area->vm_pgoff, vma, vm_pgoff);
-        BPF_CORE_READ_INTO(&area->path,     vma, vm_file, f_path);
-        BPF_CORE_READ_INTO(&vma,            vma, vm_next);
 
         if (area->path.dentry &&
             bpf_map_update_elem(&path_map, &area->path, &zero, BPF_NOEXIST) == 0)
@@ -375,10 +405,10 @@ int vm_area_tailcall(struct bpf_raw_tracepoint_args *ctx)
     argument->path_i = path_i;
     argument->vma = vma;
 
-    if (i < MAX_AREA)
-        bpf_tail_call_static(ctx, &prog_array_map, TAIL_CALL_ONE);
-    else
+    if (i == MAX_AREA)
         bpf_tail_call_static(ctx, &prog_array_map, TAIL_CALL_ZERO);
+    else
+        bpf_tail_call_static(ctx, &prog_array_map, TAIL_CALL_ONE);
 
     bpf_printk("bpf_tail_call_static error");
     return 0;
@@ -816,7 +846,6 @@ int raw_tracepoint__sys_exit(struct bpf_raw_tracepoint_args *ctx)
         bpf_tail_call_static(ctx, &prog_array_map, TAIL_CALL_ZERO);
 
         bpf_printk("bpf_tail_call_static error");
-        // event.stack_id = CHECK_ERROR(bpf_get_stackid(ctx, &stack_trace, BPF_F_USER_STACK));
     }
 
     return 0;

@@ -108,6 +108,13 @@ struct event_awaiter
 //     }
 // }
 
+// template<typename T, std::size_t Extent = std::dynamic_extent>
+// void print_stack_trace(blaze_symbolizer* symbolizer,
+//                        std::span<T, Extent> addrs)
+// {
+
+// }
+
 template<typename T, std::size_t Extent = std::dynamic_extent>
 void print_stack_trace(blaze_normalizer* normalizer,
                        blaze_symbolizer* symbolizer,
@@ -196,13 +203,13 @@ void print_stack_trace(blaze_normalizer* normalizer,
                 std::print(", {}", blaze_err_str(blaze_err_last()));
             }
             
-            if (meta.variant.elf.build_id_len)
-            {
-                std::print(", build_id: ");
-                for (auto byte : std::span(meta.variant.elf.build_id,
-                                           meta.variant.elf.build_id_len))
-                    std::print("{:02X}", byte);
-            }
+            // if (meta.variant.elf.build_id_len)
+            // {
+            //     std::print(", build_id: ");
+            //     for (auto byte : std::span(meta.variant.elf.build_id,
+            //                                meta.variant.elf.build_id_len))
+            //         std::print("{:02X}", byte);
+            // }
 
             std::println();
         }
@@ -503,13 +510,13 @@ public:
 
 class vm_area_handler
 {
-    std::unordered_map<__u64, std::vector<vm_area_event::vm_area>>& map_;
+    std::unordered_map<__u64, std::vector<vm_area_event::vm_area>>& vm_area_map_;
     std::unordered_map<path,  std::string, path_hash, path_equal>& names_map_;
     std::unordered_map<int, __u64> ktime_map_;
 
 public:
-    vm_area_handler(decltype(map_) map, decltype(names_map_) names_map) :
-        map_{map},
+    vm_area_handler(decltype(vm_area_map_) vm_area_map, decltype(names_map_) names_map) :
+        vm_area_map_{vm_area_map},
         names_map_{names_map}
     {}
 
@@ -517,7 +524,7 @@ public:
     {
         auto event = static_cast<vm_area_event*>(data);
 
-        auto& areas = map_[event->pid_tgid];
+        auto& areas = vm_area_map_[event->pid_tgid];
 
         if (auto& ktime = ktime_map_[cpu];
             ktime != event->ktime)
@@ -538,18 +545,18 @@ public:
                 event->pid,
                 areas.size());
 
-            for (const auto& entry : areas)
-            {
-                auto find = names_map_.find(entry.path);
+            // for (const auto& entry : areas)
+            // {
+            //     auto find = names_map_.find(entry.path);
 
-                std::println("    {:#014x} {:#014x} {:#010x} {:p} {:p} name: {}",
-                entry.vm_start,
-                entry.vm_end,
-                entry.vm_pgoff * 4096,
-                entry.path.dentry,
-                entry.path.mnt,
-                find == std::end(names_map_) ? std::string_view{} : find->second);
-            }
+            //     std::println("    {:#014x} {:#014x} {:#010x} {:p} {:p} name: {}",
+            //     entry.vm_start,
+            //     entry.vm_end,
+            //     entry.vm_pgoff * 4096,
+            //     entry.path.dentry,
+            //     entry.path.mnt,
+            //     find == std::end(names_map_) ? std::string_view{} : find->second);
+            // }
         }
     }
 };
@@ -611,13 +618,11 @@ class sys_exit_handler
 {
     blaze_normalizer* normalizer_;
     blaze_symbolizer* symbolizer_;
-    bpf_map* stack_trace_;
 
 public:
-    sys_exit_handler(blaze_normalizer* normalizer, blaze_symbolizer* symbolizer, bpf_map* stack_trace) :
+    sys_exit_handler(blaze_normalizer* normalizer, blaze_symbolizer* symbolizer) :
         normalizer_{normalizer},
-        symbolizer_{symbolizer},
-        stack_trace_{stack_trace}
+        symbolizer_{symbolizer}
     {}
 
     void operator()(int cpu, void *data, __u32 size)
@@ -637,29 +642,114 @@ class stack_handler
     blaze_normalizer* normalizer_;
     blaze_symbolizer* symbolizer_;
     bpf_map* stack_trace_;
+    std::unordered_map<__u64, std::vector<vm_area_event::vm_area>>& vm_area_map_;
+    std::unordered_map<path,  std::string, path_hash, path_equal>& names_map_;
 
 public:
-    stack_handler(blaze_normalizer* normalizer, blaze_symbolizer* symbolizer, bpf_map* stack_trace) :
+    stack_handler(blaze_normalizer* normalizer,
+                  blaze_symbolizer* symbolizer,
+                  bpf_map* stack_trace,
+                  decltype(vm_area_map_) vm_area_map,
+                  decltype(names_map_) names_map) :
         normalizer_{normalizer},
         symbolizer_{symbolizer},
-        stack_trace_{stack_trace}
+        stack_trace_{stack_trace},
+        vm_area_map_{vm_area_map},
+        names_map_{names_map}
     {}
 
     void operator()(int cpu, void *data, __u32 size)
     {
-        // auto event = static_cast<sys_exit_event*>(data);
+        auto event = static_cast<stack_event*>(data);
 
-        // std::array<__u64, PERF_MAX_STACK_DEPTH> stack;
-        // int error = bpf_map__lookup_elem(stack_trace_,
-        //                                  &event->stack_id, sizeof(event->stack_id),
-        //                                  std::data(stack), sizeof(stack), 0);
-        // if (error < 0)
-        //     return;
+        std::array<uint64_t, PERF_MAX_STACK_DEPTH> stack;
+        int error = bpf_map__lookup_elem(stack_trace_,
+                                         &event->stack_id, sizeof(event->stack_id),
+                                         std::data(stack), sizeof(stack), 0);
+        if (error < 0)
+            return;
+
+        const auto& areas = vm_area_map_[event->pid_tgid];
+
+        for (const auto& addr : stack)
+        {
+            if (addr == 0)
+                break;
+
+            vm_area_event::vm_area value =
+            {
+                .vm_start = addr
+            };
+
+            auto comp = [](const vm_area_event::vm_area& left, const vm_area_event::vm_area& right)
+            {
+                return left.vm_start < right.vm_start;
+            };
+
+            auto find_area = std::lower_bound(std::begin(areas), std::end(areas), value, comp);
+            if  (find_area == std::end(areas) || value.vm_start >= find_area->vm_end)
+            {
+                std::println("error: not find area");
+                continue;
+            }
+
+            auto find_path = names_map_.find(find_area->path);
+            if  (find_path == std::end(names_map_))
+            {
+                std::println("error: not find path");
+                continue;
+            }
+
+            blaze_symbolize_src_elf src =
+            {
+                .type_size  = sizeof(src),
+                .path       = std::data(find_path->second),
+                .debug_syms = true
+            };
+
+            auto elf_file_offset = addr - find_area->vm_start + find_area->vm_pgoff * 4096;
+
+            auto syms = std::unique_ptr<const blaze_syms, decltype(&blaze_syms_free)>{
+                blaze_symbolize_elf_file_offsets(symbolizer_,
+                                                 &src,
+                                                 &elf_file_offset,
+                                                 1),
+                blaze_syms_free};
+
+            std::print("    elf: {:40} elf_off: {:>#10x}",
+                find_path->second,
+                elf_file_offset);
+
+            if (syms)
+            {
+                const auto& sym = syms->syms[0];
+                if (sym.reason)
+                    std::print(", sym: {}", blaze_symbolize_reason_str(sym.reason));
+                else
+                {
+                    std::print(", sym: {}, sym_addr: {:#010x}, sym_off: {:#010x}",
+                        sym.name,
+                        sym.addr,
+                        sym.offset);
+                    
+                    if (sym.code_info.file)
+                        std::print(", file: {}:{}:{}",
+                            sym.code_info.file,
+                            sym.code_info.line,
+                            sym.code_info.column);
+                }
+            }
+            else
+            {
+                std::print(", {}", blaze_err_str(blaze_err_last()));
+            }
+
+            std::println();
+        }
         
         // std::span<decltype(stack)::value_type> addrs{
         //     std::begin(stack),
         //     std::ranges::find(stack, 0)};
-
         // print_stack_trace(normalizer_, symbolizer_, event->tgid, addrs);
     }
 };
@@ -782,14 +872,18 @@ int main(int argc, char *argv[])
     if ((error = signal_bpf::attach(skeleton.get())) < 0)
         return EXIT_FAILURE;
 
-    // const char *debug_dirs[] = { "/usr/lib/debug",
-    //                              "/usr/lib/debug/.build-id" };
+    const char *debug_dirs[] = { "/usr/lib/debug",
+                                 "/lib/debug",
+                                 "/usr/lib/debug/.build-id/46",
+                                 "/usr/lib/debug/.build-id/48",
+                                 "/usr/lib/debug/.build-id/6a",
+                                 "/workspaces/eBFP" };
 
     blaze_symbolizer_opts symbolizer_opts =
     {
         .type_size = sizeof(symbolizer_opts),
-        // .debug_dirs = std::data(debug_dirs),
-        // .debug_dirs_len = std::size(debug_dirs),
+        .debug_dirs = std::data(debug_dirs),
+        .debug_dirs_len = std::size(debug_dirs),
         // .auto_reload = true, // 可選：若 ELF 檔有變更，自動 reload
         .code_info = true,   // 啟用 DWARF 行號資訊解析
         // .inlined_fns = true, // 可選：還原 inline 函數
@@ -826,7 +920,7 @@ int main(int argc, char *argv[])
     std::unordered_map<__u64, read_argument> read_map;
     std::unordered_map<__u64, std::vector<vm_area_event::vm_area>> vm_area_map;
     std::unordered_map<path,  std::string, path_hash, path_equal> names_map;
-    
+
     event_handler<EVENT_MAX> handler;
     handler[EVENT_ID(sys_enter_execve_event)]   = sys_enter_execve_handler{execve_map};
     handler[EVENT_ID(sys_exit_execve_event)]    = sys_exit_execve_handler{execve_map};
@@ -836,10 +930,11 @@ int main(int argc, char *argv[])
     handler[EVENT_ID(sys_exit_read_event)]      = sys_exit_read_handler{read_map, names_map};
     handler[EVENT_ID(path_event)]               = path_handler{names_map, skeleton->maps.path_map};
     handler[EVENT_ID(vm_area_event)]            = vm_area_handler{vm_area_map, names_map};
+    handler[EVENT_ID(stack_event)]              = stack_handler{normalizer.get(), symbolizer.get(), skeleton->maps.stack_trace, vm_area_map, names_map};
     handler[EVENT_ID(sched_process_exit_event)] = handle_sched_process_exit;
     handler[EVENT_ID(do_coredump_event)]        = do_coredump_handler{symbolizer.get(), skeleton->maps.stack_trace};
-    handler[EVENT_ID(sys_exit_event)]           = sys_exit_handler{normalizer.get(), symbolizer.get(), skeleton->maps.stack_trace};
-    
+    handler[EVENT_ID(sys_exit_event)]           = sys_exit_handler{normalizer.get(), symbolizer.get()};
+
     // perf buffer 選項
     perf_buffer_opts pb_opts{ .sz = sizeof(perf_buffer_opts) };
 
