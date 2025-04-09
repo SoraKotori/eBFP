@@ -851,6 +851,101 @@ int raw_tracepoint__sys_exit(struct bpf_raw_tracepoint_args *ctx)
     return 0;
 }
 
+struct mmap_argument
+{
+    struct file *file;
+    unsigned long addr;
+    unsigned long len;
+    unsigned long prot;
+    unsigned long flags;
+    vm_flags_t vm_flags;
+    unsigned long pgoff;
+    unsigned long *populate;
+    struct list_head *uf;
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, MAX_ENTRIES);
+    __type(key, struct bpf_pidns_info);
+    __type(value, struct mmap_argument);
+} do_mmap_map SEC(".maps");
+
+SEC("kprobe/do_mmap")
+int kprobe__do_mmap(struct pt_regs *ctx)
+{
+    const u32 zero = 0;
+    struct self_t *self = CHECK_PTR(bpf_map_lookup_elem(&self_map, &zero));
+    if (!self)
+        return 0;
+
+    struct bpf_pidns_info nsdata;
+    long error = bpf_get_ns_current_pid_tgid(self->dev, self->ino, &nsdata, sizeof(nsdata));
+    if  (error == -22) // EINVAL (invalid argument)
+        return 0;      // dev and inum supplied don't match dev_t and inode number with nsfs of current task
+    else
+        CHECK_ERROR(error);
+
+    struct mmap_argument argument =
+    {
+        .file     = (void*)PT_REGS_PARM1_CORE(ctx),
+        .addr     =        PT_REGS_PARM2_CORE(ctx),
+        .len      =        PT_REGS_PARM3_CORE(ctx),
+        .prot     =        PT_REGS_PARM4_CORE(ctx),
+        .flags    =        PT_REGS_PARM5_CORE(ctx),
+        .vm_flags =        PT_REGS_PARM6_CORE(ctx),
+    };
+
+    unsigned long* sp = (unsigned long *)PT_REGS_SP_CORE(ctx);
+
+    CHECK_ERROR(bpf_core_read(&argument.pgoff,    sizeof(*sp), sp + 1));
+    CHECK_ERROR(bpf_core_read(&argument.populate, sizeof(*sp), sp + 2));
+    CHECK_ERROR(bpf_core_read(&argument.uf,       sizeof(*sp), sp + 3));
+
+    CHECK_ERROR(bpf_map_update_elem(&do_mmap_map, &nsdata, &argument, BPF_ANY));
+
+    return 0;
+}
+
+#ifndef MAX_ERRNO
+#define MAX_ERRNO	4095
+#endif
+
+#ifndef IS_ERR_VALUE
+#define IS_ERR_VALUE(x) ((unsigned long)(void *)(x) >= (unsigned long)-MAX_ERRNO)
+#endif
+
+SEC("kretprobe/do_mmap")
+int BPF_KPROBE(kretprobe__do_mmap)
+{
+    unsigned long ret = PT_REGS_RC_CORE(ctx);
+    if (IS_ERR_VALUE(ret))
+        return 0;
+
+    const u32 zero = 0;
+    struct self_t *self = CHECK_PTR(bpf_map_lookup_elem(&self_map, &zero));
+    if (!self)
+        return 0;
+
+    struct bpf_pidns_info nsdata;
+    long error = bpf_get_ns_current_pid_tgid(self->dev, self->ino, &nsdata, sizeof(nsdata));
+    if  (error == -22) // EINVAL (invalid argument)
+        return 0;
+    else
+        CHECK_ERROR(error);
+
+    struct mmap_argument *argument = bpf_map_lookup_elem(&do_mmap_map, &nsdata);
+    if (!argument)
+        return 0;
+
+    if (argument->uf)
+    {
+
+    }
+
+    return 0;
+}
+
 // SEC("kprobe/__send_signal")
 // int BPF_KPROBE(kprobe__send_signal, int sig, struct siginfo *info, struct task_struct *task)
 // {
