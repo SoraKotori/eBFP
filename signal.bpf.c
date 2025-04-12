@@ -848,7 +848,6 @@ struct mmap_argument
     unsigned long len;
     unsigned long prot;
     unsigned long flags;
-    vm_flags_t vm_flags;
     unsigned long pgoff;
     unsigned long *populate;
     struct list_head *uf;
@@ -860,6 +859,8 @@ struct {
     __type(key, struct bpf_pidns_info);
     __type(value, struct mmap_argument);
 } do_mmap_map SEC(".maps");
+
+extern __u32 LINUX_KERNEL_VERSION __kconfig;
 
 SEC("kprobe/do_mmap")
 int kprobe__do_mmap(struct pt_regs *ctx)
@@ -874,21 +875,27 @@ int kprobe__do_mmap(struct pt_regs *ctx)
     else
         CHECK_ERROR(error);
 
-    struct mmap_argument argument =
-    {
-        .file     = (void*)PT_REGS_PARM1_CORE(ctx),
-        .addr     =        PT_REGS_PARM2_CORE(ctx),
-        .len      =        PT_REGS_PARM3_CORE(ctx),
-        .prot     =        PT_REGS_PARM4_CORE(ctx),
-        .flags    =        PT_REGS_PARM5_CORE(ctx),
-        .vm_flags =        PT_REGS_PARM6_CORE(ctx),
-    };
+    struct mmap_argument argument;
+    argument.file  = (void*)PT_REGS_PARM1_CORE(ctx);
+    argument.addr  =        PT_REGS_PARM2_CORE(ctx);
+    argument.len   =        PT_REGS_PARM3_CORE(ctx);
+    argument.prot  =        PT_REGS_PARM4_CORE(ctx);
+    argument.flags =        PT_REGS_PARM5_CORE(ctx);
 
     unsigned long* sp = (unsigned long *)PT_REGS_SP_CORE(ctx);
 
-    CHECK_ERROR(bpf_core_read(&argument.pgoff,    sizeof(*sp), sp + 1));
-    CHECK_ERROR(bpf_core_read(&argument.populate, sizeof(*sp), sp + 2));
-    CHECK_ERROR(bpf_core_read(&argument.uf,       sizeof(*sp), sp + 3));
+    if (LINUX_KERNEL_VERSION < KERNEL_VERSION(5, 9, 0))
+    {
+        CHECK_ERROR(bpf_core_read(&argument.pgoff,    sizeof(*sp), sp + 1));
+        CHECK_ERROR(bpf_core_read(&argument.populate, sizeof(*sp), sp + 2));
+        CHECK_ERROR(bpf_core_read(&argument.uf,       sizeof(*sp), sp + 3));
+    }
+    else
+    {
+        argument.pgoff = PT_REGS_PARM6_CORE(ctx);
+        CHECK_ERROR(bpf_core_read(&argument.populate, sizeof(*sp), sp + 1));
+        CHECK_ERROR(bpf_core_read(&argument.uf,       sizeof(*sp), sp + 2));
+    }
 
     // 更新 do_mmap_map 傳遞參數給 kretprobe/do_mmap
     CHECK_ERROR(bpf_map_update_elem(&do_mmap_map, &nsdata, &argument, BPF_NOEXIST));
@@ -940,14 +947,17 @@ int BPF_KPROBE(kretprobe__do_mmap)
         .path  = BPF_CORE_READ(file, f_path)
     );
 
+    // 釋放掉對應的 mmap_argument
+    CHECK_ERROR(bpf_map_delete_elem(&do_mmap_map, &nsdata));
+
     error = bpf_map_update_elem(&path_map, &event.path, &zero, BPF_NOEXIST);
     if  (error == 0)
         CHECK_ERROR(path_output(ctx, &event.path));
     else if (error != -17) // EEXIST (File exists)
         CHECK_ERROR(error);
 
-    // 釋放掉對應的 mmap_argument
-    CHECK_ERROR(bpf_map_delete_elem(&do_mmap_map, &nsdata));
+    CHECK_ERROR(bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU,
+                                      &event, sizeof(event)));
 
     return 0;
 }

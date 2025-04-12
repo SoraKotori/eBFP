@@ -637,6 +637,63 @@ public:
     }
 };
 
+#ifndef PROT_READ
+#define PROT_READ	0x1  /* Page can be read.  */
+#endif
+
+#ifndef MAP_PRIVATE
+#define MAP_PRIVATE	0x02 /* Changes are private.  */
+#endif
+
+#ifndef MAP_FIXED
+#define MAP_FIXED	0x10 /* Interpret addr exactly.  */
+#endif
+
+class do_mmap_handler
+{
+    std::unordered_map<__u64, std::vector<vm_area_event::vm_area>>& vm_area_map_;
+
+public:
+    do_mmap_handler(decltype(vm_area_map_) vm_area_map) :
+        vm_area_map_{vm_area_map}
+    {}
+
+    void operator()(int cpu, void *data, __u32 size)
+    {
+        auto event = static_cast<do_mmap_event*>(data);
+
+        // auto find_it = vm_area_map_.find(event->pid_tgid);
+        // if  (find_it == std::end(vm_area_map_))
+        //     return;
+
+        if (event->prot  == PROT_READ &&
+            event->flags == (MAP_PRIVATE | MAP_FIXED) &&
+            event->pgoff == 0)
+        {
+            // find_it->second.clear();
+        }
+
+        std::println("    "
+            "tgid: {}, "
+            "pid: {}, "
+            "addr: {:x}, "
+            "len: {}, "
+            "prot: {}, "
+            "flags: {}, "
+            "pgoff: {:x}, "
+            "uf: {:p}",
+            event->tgid,
+            event->pid,
+            event->addr,
+            event->len,
+            event->prot,
+            event->flags,
+            event->pgoff,
+            (void*)event->uf
+        );
+    }
+};
+
 class stack_handler
 {
     blaze_normalizer* normalizer_;
@@ -934,6 +991,7 @@ int main(int argc, char *argv[])
     handler[EVENT_ID(sched_process_exit_event)] = handle_sched_process_exit;
     handler[EVENT_ID(do_coredump_event)]        = do_coredump_handler{symbolizer.get(), skeleton->maps.stack_trace};
     handler[EVENT_ID(sys_exit_event)]           = sys_exit_handler{normalizer.get(), symbolizer.get()};
+    handler[EVENT_ID(do_mmap_event)]            = do_mmap_handler{vm_area_map};
 
     // perf buffer 選項
     perf_buffer_opts pb_opts{ .sz = sizeof(perf_buffer_opts) };
