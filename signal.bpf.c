@@ -168,31 +168,31 @@ struct EVENT_TYPE name =                  \
 #define PRINT_ERROR(error) \
     bpf_printk(__FILE__ ":" STR(__LINE__) ": error: %d: %s", error, __func__)
 
-#define CHECK_ERROR(expr)    \
-({                           \
-    long __err = (expr);     \
-    if  (__err < 0)          \
-    {                        \
-        PRINT_ERROR(__err);  \
-        return 0;            \
-    }                        \
-    __err;                   \
+#define CHECK_ERROR(expr)   \
+({                          \
+    long __err = (expr);    \
+    if  (__err < 0)         \
+    {                       \
+        PRINT_ERROR(__err); \
+        return 0;           \
+    }                       \
+    __err;                  \
 })
-
-#define PRINT_NULL() \
-    bpf_printk(__FILE__ ":" STR(__LINE__) ": null pointer: %s", __func__)
 
 #define CHECK_PTR(expr)          \
 ({                               \
     typeof(expr) __ptr = (expr); \
     if (!__ptr)                  \
-        PRINT_NULL();            \
+    {                            \
+        bpf_printk(__FILE__ ":" STR(__LINE__) ": null pointer: " #expr ": %s", __func__); \
+        return 0;                \
+    }                            \
     __ptr;                       \
 })
 
 #define CHECK_SIZE(size, expr) \
 ({                             \
-    if (size > expr)   \
+    if (size > expr)           \
     {                          \
         bpf_printk(__FILE__ ":" STR(__LINE__) ": size overflow: " #size " > " #expr); \
         return 0;              \
@@ -285,12 +285,8 @@ int path_tailcall(struct bpf_raw_tracepoint_args *ctx)
     const u32 zero = 0;
 
     struct vm_area_argument *argument = CHECK_PTR(bpf_map_lookup_elem(&vm_area_map, &zero));
-    if (!argument)
-        return 0;
 
     struct path *paths = CHECK_PTR(bpf_map_lookup_elem(&path_percpu, &zero));
-    if (!paths)
-        return 0;
 
     u32 path_i = argument->path_i;
 
@@ -325,8 +321,6 @@ int stack_tailcall(struct bpf_raw_tracepoint_args* ctx)
     const u32 zero = 0;
 
     struct vm_area_event* vm_area_event = CHECK_PTR(bpf_map_lookup_elem(&vm_area_buffer, &zero));
-    if (!vm_area_event)
-        return 0;
 
     INIT_EVENT(event, stack_event,
         .pid_tgid = vm_area_event->pid_tgid,
@@ -346,16 +340,10 @@ int vm_area_tailcall(struct bpf_raw_tracepoint_args *ctx)
     const u32 zero = 0;
 
     struct vm_area_event* event = CHECK_PTR(bpf_map_lookup_elem(&vm_area_buffer, &zero));
-    if (!event)
-        return 0;
 
     struct vm_area_argument *argument = CHECK_PTR(bpf_map_lookup_elem(&vm_area_map, &zero));
-    if (!argument)
-        return 0;
     
     struct path *paths = CHECK_PTR(bpf_map_lookup_elem(&path_percpu, &zero));
-    if (!paths)
-        return 0;
 
     u32 i, path_i = argument->path_i;
     struct vm_area_struct* vma = argument->vma;
@@ -448,8 +436,6 @@ int tracepoint__syscalls__sys_enter_execve(struct trace_event_raw_sys_enter *ctx
     // 從 map 中取得欲比對的 pattern
     const u32 zero = 0;
     char *pattern = CHECK_PTR(bpf_map_lookup_elem(&command_pattern, &zero));
-    if  (!pattern)
-        return 0;
 
     // 從 tracepoint context 中取得 argv 指標，並取得 argv[0]
     const char *const *argv = NULL;
@@ -674,8 +660,6 @@ int tracepoint__syscalls__sys_exit_read(struct trace_event_raw_sys_exit *ctx)
     // ------------------------------------------------------------
 
     u32 *context = CHECK_PTR(bpf_map_lookup_elem(&read_content, &zero));
-    if (!context)
-        return 0;
 
     if (*context == false || event.exit.ret <= 0)
         return 0;
@@ -763,8 +747,6 @@ int BPF_KPROBE(kprobe__do_coredump, const kernel_siginfo_t *siginfo)
 
 //     u32 zero = 0;
 //     struct path *paths = CHECK_PTR(bpf_map_lookup_elem(&path_percpu, &zero));
-//     if (!paths)
-//         return 0;
 
 // #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 3, 0)
 //     #pragma unroll
@@ -785,8 +767,6 @@ int raw_tracepoint__sys_exit(struct bpf_raw_tracepoint_args *ctx)
 {
     const u32 zero = 0;
     struct self_t *self = CHECK_PTR(bpf_map_lookup_elem(&self_map, &zero));
-    if (!self)
-        return 0;
 
     struct bpf_pidns_info nsdata;
     long error = bpf_get_ns_current_pid_tgid(self->dev, self->ino, &nsdata, sizeof(nsdata));
@@ -810,8 +790,6 @@ int raw_tracepoint__sys_exit(struct bpf_raw_tracepoint_args *ctx)
     u64 *ret_map = CHECK_PTR(bpf_map_lookup_elem(event.ret < 0 ? (void*)&negative_ret_map
                                                                : (void*)&positive_ret_map,
                                                  &zero));
-    if (!ret_map)
-        return 0;
 
     u64 syscell_idx =      event.syscall_nr / (sizeof(u64) * 8 /* bits */);
     u64 syscell_bit = 1 << event.syscall_nr % (sizeof(u64) * 8 /* bits */);
@@ -826,8 +804,6 @@ int raw_tracepoint__sys_exit(struct bpf_raw_tracepoint_args *ctx)
 
         u32 zero = 0;
         struct vm_area_event* vm_area_event = CHECK_PTR(bpf_map_lookup_elem(&vm_area_buffer, &zero));
-        if (!vm_area_event)
-            return 0;
 
         vm_area_event->base.event_id = EVENT_ID(vm_area_event);
         vm_area_event->pid_tgid      = event.pid_tgid;
@@ -876,8 +852,6 @@ int kprobe__do_mmap(struct pt_regs *ctx)
 {
     const u32 zero = 0;
     struct self_t *self = CHECK_PTR(bpf_map_lookup_elem(&self_map, &zero));
-    if (!self)
-        return 0;
 
     struct bpf_pidns_info nsdata;
     long error = bpf_get_ns_current_pid_tgid(self->dev, self->ino, &nsdata, sizeof(nsdata));
@@ -924,8 +898,6 @@ int BPF_KPROBE(kretprobe__do_mmap)
 
     const u32 zero = 0;
     struct self_t *self = CHECK_PTR(bpf_map_lookup_elem(&self_map, &zero));
-    if (!self)
-        return 0;
 
     struct bpf_pidns_info nsdata;
     long error = bpf_get_ns_current_pid_tgid(self->dev, self->ino, &nsdata, sizeof(nsdata));
