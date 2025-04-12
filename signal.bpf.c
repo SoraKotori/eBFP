@@ -265,10 +265,8 @@ long read_path(char dst[MAX_ARG_LEN], const struct path *path)
 static
 long path_output(void *ctx, const struct path *path)
 {
-    u32 zero = 0;
-    struct path_event* event = bpf_map_lookup_elem(&path_buffer, &zero);
-    if  (!event)
-        return 0;
+    const u32 zero = 0;
+    struct path_event* event = CHECK_PTR(bpf_map_lookup_elem(&path_buffer, &zero));
 
     event->base.event_id = EVENT_ID(path_event);
     event->index         = CHECK_ERROR(read_path(event->name, path));
@@ -276,6 +274,19 @@ long path_output(void *ctx, const struct path *path)
 
     CHECK_ERROR(bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU,
                                       event, sizeof(*event)));
+    return 0;
+}
+
+static __always_inline
+long try_update_path(void *ctx, const struct path *path)
+{
+    const u32 zero = 0;
+    long error = bpf_map_update_elem(&path_map, path, &zero, BPF_NOEXIST);
+    if  (error == 0)
+        CHECK_ERROR(path_output(ctx, path));
+    else if (error != -17) // EEXIST (File exists)
+        CHECK_ERROR(error);
+
     return 0;
 }
 
@@ -515,6 +526,7 @@ int tracepoint__syscalls__sys_exit_execve(struct trace_event_raw_sys_exit *ctx)
         .ret      = ctx->ret
     );
 
+    // 檢查 execve_map 判斷先前是否在 enter execve 經過處理
     int *execve_ptr = bpf_map_lookup_elem(&execve_map, &event.pid_tgid);
     if (!execve_ptr)
         return 0;
@@ -543,8 +555,8 @@ int tracepoint__syscalls__sys_enter_kill(struct trace_event_raw_sys_enter *ctx)
     if (event.signal == 0)
         return 0;
 
-    // 更新 singal 作為 sys_exit_kill 的判斷條件
-    CHECK_ERROR(bpf_map_update_elem(&kill_map, &event.pid_tgid, &event.signal, BPF_ANY));
+    // 更新 kill_map 作為 sys_exit_kill 的判斷條件
+    CHECK_ERROR(bpf_map_update_elem(&kill_map, &event.pid_tgid, &event.signal, BPF_NOEXIST));
     
     CHECK_ERROR(bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU,
                                       &event, sizeof(event)));
@@ -560,11 +572,12 @@ int tracepoint__syscalls__sys_exit_kill(struct trace_event_raw_sys_exit *ctx)
         .ret      = ctx->ret
     );
 
-    int *signal_ptr = bpf_map_lookup_elem(&kill_map, &event.pid_tgid);
-    if (!signal_ptr)
+    // 檢查 kill_map 判斷是否要處理 signal
+    long error = bpf_map_delete_elem(&kill_map, &event.pid_tgid);
+    if  (error == -2) // -ENOENT (No such file or directory)
         return 0;
-
-    CHECK_ERROR(bpf_map_delete_elem(&kill_map, &event.pid_tgid));
+    else
+        CHECK_ERROR(error);
     
     CHECK_ERROR(bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU,
                                       &event, sizeof(event)));
@@ -575,8 +588,9 @@ int tracepoint__syscalls__sys_exit_kill(struct trace_event_raw_sys_exit *ctx)
 SEC("tracepoint/syscalls/sys_enter_read")
 int tracepoint__syscalls__sys_enter_read(struct trace_event_raw_sys_enter *ctx)
 {
-    __u64 pid_tgid = bpf_get_current_pid_tgid();
+    u64 pid_tgid = bpf_get_current_pid_tgid();
 
+    // 檢查 execve_map 判斷是否要處理 syscall
     int *execve_ptr = bpf_map_lookup_elem(&execve_map, &pid_tgid);
     if (!execve_ptr)
         return 0;
@@ -588,7 +602,8 @@ int tracepoint__syscalls__sys_enter_read(struct trace_event_raw_sys_enter *ctx)
         .count = ctx->args[2]
     };
 
-    CHECK_ERROR(bpf_map_update_elem(&read_map, &pid_tgid, &argument, BPF_ANY));
+    // 更新 read_map 作為 sys_exit_read 的判斷條件
+    CHECK_ERROR(bpf_map_update_elem(&read_map, &pid_tgid, &argument, BPF_NOEXIST));
     
     return 0;
 }
@@ -660,7 +675,6 @@ int tracepoint__syscalls__sys_exit_read(struct trace_event_raw_sys_exit *ctx)
     // ------------------------------------------------------------
 
     u32 *context = CHECK_PTR(bpf_map_lookup_elem(&read_content, &zero));
-
     if (*context == false || event.exit.ret <= 0)
         return 0;
 
@@ -876,13 +890,14 @@ int kprobe__do_mmap(struct pt_regs *ctx)
     CHECK_ERROR(bpf_core_read(&argument.populate, sizeof(*sp), sp + 2));
     CHECK_ERROR(bpf_core_read(&argument.uf,       sizeof(*sp), sp + 3));
 
-    CHECK_ERROR(bpf_map_update_elem(&do_mmap_map, &nsdata, &argument, BPF_ANY));
+    // 更新 do_mmap_map 傳遞參數給 kretprobe/do_mmap
+    CHECK_ERROR(bpf_map_update_elem(&do_mmap_map, &nsdata, &argument, BPF_NOEXIST));
 
     return 0;
 }
 
 #ifndef MAX_ERRNO
-#define MAX_ERRNO	4095
+#define MAX_ERRNO 4095
 #endif
 
 #ifndef IS_ERR_VALUE
@@ -906,14 +921,33 @@ int BPF_KPROBE(kretprobe__do_mmap)
     else
         CHECK_ERROR(error);
 
+    // 檢查 do_mmap_map 從中取得參數
     struct mmap_argument *argument = bpf_map_lookup_elem(&do_mmap_map, &nsdata);
     if (!argument)
         return 0;
 
-    if (argument->uf)
-    {
+    struct file *file = argument->file;
 
-    }
+    INIT_EVENT(event, do_mmap_event,
+        .pid   = nsdata.pid,
+        .tgid  = nsdata.tgid,
+        .addr  = argument->addr,
+        .len   = argument->len,
+        .prot  = argument->prot,
+        .flags = argument->flags,
+        .pgoff = argument->pgoff,
+        .uf    = argument->uf,
+        .path  = BPF_CORE_READ(file, f_path)
+    );
+
+    error = bpf_map_update_elem(&path_map, &event.path, &zero, BPF_NOEXIST);
+    if  (error == 0)
+        CHECK_ERROR(path_output(ctx, &event.path));
+    else if (error != -17) // EEXIST (File exists)
+        CHECK_ERROR(error);
+
+    // 釋放掉對應的 mmap_argument
+    CHECK_ERROR(bpf_map_delete_elem(&do_mmap_map, &nsdata));
 
     return 0;
 }

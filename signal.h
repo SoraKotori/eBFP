@@ -21,7 +21,8 @@
     MAKE_EVENT_ID(stack_event) \
     MAKE_EVENT_ID(sched_process_exit_event) \
     MAKE_EVENT_ID(do_coredump_event) \
-    MAKE_EVENT_ID(sys_exit_event)
+    MAKE_EVENT_ID(sys_exit_event) \
+    MAKE_EVENT_ID(do_mmap_event)
 
 #define EVENT_ID(EVENT_TYPE) EVENT_TYPE##_ID
 
@@ -165,6 +166,20 @@ struct sys_exit_event
     PID_TGID_UNION;
     long syscall_nr;
     long ret;
+};
+
+struct do_mmap_event
+{
+    struct event_base base;
+
+    PID_TGID_UNION;
+    unsigned long addr;
+    unsigned long len;
+    unsigned long prot;
+    unsigned long flags;
+    unsigned long pgoff;
+    struct list_head *uf;
+    struct path path;
 };
 
 struct self_t
