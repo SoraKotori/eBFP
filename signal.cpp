@@ -10,6 +10,7 @@
 #include <coroutine>
 #include <algorithm>
 #include <span>
+#include <set>
 
 #include <sys/wait.h>
 #include <sys/stat.h>
@@ -508,9 +509,17 @@ public:
     }
 };
 
+struct vm_area_comp
+{
+    auto operator()(const vm_area_event::vm_area& left, const vm_area_event::vm_area& right) const
+    {
+        return left.vm_start < right.vm_start;
+    };
+};
+
 class vm_area_handler
 {
-    std::unordered_map<__u64, std::vector<vm_area_event::vm_area>>& vm_area_map_;
+    std::unordered_map<__u64, std::set<vm_area_event::vm_area, vm_area_comp>>& vm_area_map_;
     std::unordered_map<path,  std::string, path_hash, path_equal>& names_map_;
     std::unordered_map<int, __u64> ktime_map_;
 
@@ -535,7 +544,7 @@ public:
 
         for (auto& area : std::span{event->area, event->area_size})
         {
-            areas.emplace_back(area);
+            areas.emplace_hint(std::end(areas), area);
         }
 
         if (event->area_size != MAX_AREA)
@@ -651,7 +660,7 @@ public:
 
 class do_mmap_handler
 {
-    std::unordered_map<__u64, std::vector<vm_area_event::vm_area>>& vm_area_map_;
+    std::unordered_map<__u64, std::set<vm_area_event::vm_area, vm_area_comp>>& vm_area_map_;
 
 public:
     do_mmap_handler(decltype(vm_area_map_) vm_area_map) :
@@ -662,15 +671,13 @@ public:
     {
         auto event = static_cast<do_mmap_event*>(data);
 
-        // auto find_it = vm_area_map_.find(event->pid_tgid);
-        // if  (find_it == std::end(vm_area_map_))
-        //     return;
+        // auto& areas = vm_area_map_[event->pid_tgid];
 
         if (event->prot  == PROT_READ &&
             event->flags == (MAP_PRIVATE | MAP_FIXED) &&
             event->pgoff == 0)
         {
-            // find_it->second.clear();
+            // areas.clear();
         }
 
         std::println("    "
@@ -699,7 +706,7 @@ class stack_handler
     blaze_normalizer* normalizer_;
     blaze_symbolizer* symbolizer_;
     bpf_map* stack_trace_;
-    std::unordered_map<__u64, std::vector<vm_area_event::vm_area>>& vm_area_map_;
+    std::unordered_map<__u64, std::set<vm_area_event::vm_area, vm_area_comp>>& vm_area_map_;
     std::unordered_map<path,  std::string, path_hash, path_equal>& names_map_;
 
 public:
@@ -733,26 +740,25 @@ public:
             if (addr == 0)
                 break;
 
-            vm_area_event::vm_area value =
+            vm_area_event::vm_area key =
             {
                 .vm_start = addr
             };
 
-            auto comp = [](const vm_area_event::vm_area& left, const vm_area_event::vm_area& right)
+            auto find_area = areas.upper_bound(key);
+            if  (find_area == std::begin(areas) || key.vm_start >= (--find_area)->vm_end)
             {
-                return left.vm_start < right.vm_start;
-            };
-
-            auto find_area = std::lower_bound(std::begin(areas), std::end(areas), value, comp);
-            if  (find_area == std::end(areas) || value.vm_start >= find_area->vm_end)
-            {
-                std::println("error: not find area");
+                // 如果 user space 來不及處理 kernel 的資訊時，會觸發錯誤
+                std::println("error: not find area, start: {:x}, end: {:x}, addr: {:x}", find_area->vm_start,
+                                                                                         find_area->vm_end,
+                                                                                         key.vm_start);
                 continue;
             }
 
             auto find_path = names_map_.find(find_area->path);
             if  (find_path == std::end(names_map_))
             {
+                // 如果 user space 來不及處理 kernel 的資訊時，會觸發錯誤
                 std::println("error: not find path");
                 continue;
             }
@@ -975,7 +981,7 @@ int main(int argc, char *argv[])
     std::unordered_map<__u64, execve_argument> execve_map;
     std::unordered_map<__u64, kill_argument> kill_map;
     std::unordered_map<__u64, read_argument> read_map;
-    std::unordered_map<__u64, std::vector<vm_area_event::vm_area>> vm_area_map;
+    std::unordered_map<__u64, std::set<vm_area_event::vm_area, vm_area_comp>> vm_area_map;
     std::unordered_map<path,  std::string, path_hash, path_equal> names_map;
 
     event_handler<EVENT_MAX> handler;
