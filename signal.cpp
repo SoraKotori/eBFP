@@ -740,18 +740,16 @@ public:
             if (addr == 0)
                 break;
 
-            vm_area_event::vm_area key =
-            {
-                .vm_start = addr
-            };
+            vm_area_event::vm_area key = { .vm_start = addr };
 
             auto find_area = areas.upper_bound(key);
             if  (find_area == std::begin(areas) || key.vm_start >= (--find_area)->vm_end)
             {
                 // 如果 user space 來不及處理 kernel 的資訊時，會觸發錯誤
-                std::println("error: not find area, start: {:x}, end: {:x}, addr: {:x}", find_area->vm_start,
-                                                                                         find_area->vm_end,
-                                                                                         key.vm_start);
+                std::println("error: not find area, start: {:x}, end: {:x}, addr: {:x}",
+                    find_area->vm_start,
+                    find_area->vm_end,
+                    key.vm_start);
                 continue;
             }
 
