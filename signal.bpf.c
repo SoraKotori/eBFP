@@ -335,8 +335,9 @@ int stack_tailcall(struct bpf_raw_tracepoint_args* ctx)
 
     INIT_EVENT(event, stack_event,
         .pid_tgid = vm_area_event->pid_tgid,
-        .stack_id = CHECK_ERROR(bpf_get_stackid(ctx, &stack_trace, BPF_F_USER_STACK |
-                                                                   BPF_F_REUSE_STACKID))
+        .stack_id = CHECK_ERROR(bpf_get_stackid(ctx, &stack_trace, BPF_F_USER_STACK))
+            //  |
+            //                                                        BPF_F_REUSE_STACKID))
     );
 
     CHECK_ERROR(bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU,
@@ -748,31 +749,6 @@ int BPF_KPROBE(kprobe__do_coredump, const kernel_siginfo_t *siginfo)
 
     CHECK_ERROR(bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU,
                                       &event, sizeof(event)));
-
-
-
-    // struct task_struct *task = (struct task_struct *)bpf_get_current_task();
-
-    // struct vm_area_struct *vma = NULL;
-    // CHECK_ERROR(BPF_CORE_READ_INTO(&vma, task, mm, mmap));
-    // u32 path_size = CHECK_ERROR(vm_area_output(ctx, bpf_get_current_pid_tgid(), vma));
-
-    // bpf_tail_call_static(ctx, &prog_array_map, TAIL_CALL_ZERO);
-
-//     u32 zero = 0;
-//     struct path *paths = CHECK_PTR(bpf_map_lookup_elem(&path_percpu, &zero));
-
-// #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 3, 0)
-//     #pragma unroll
-// #endif
-//     for (u32 path_i = 0; path_i < 14; path_i++)
-//     {
-//         // barrier();
-//         // struct path* path = bpf_map_lookup_elem(&path_percpu, &path_i);
-
-//         CHECK_ERROR(path_output(ctx, &paths[path_i]));
-//     }
-
     return 0;
 }
 
