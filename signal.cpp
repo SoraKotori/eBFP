@@ -122,146 +122,138 @@ void print_stack_trace(blaze_normalizer* normalizer,
                        uint32_t tgid,
                        std::span<T, Extent> addrs)
 {
-    blaze_normalize_opts opts =
-    {
-        .type_size = sizeof(opts)
-    };
-
-    auto output = std::unique_ptr<blaze_normalized_user_output, decltype(&blaze_user_output_free)>{
-        blaze_normalize_user_addrs_opts(normalizer,
-                                        tgid,
-                                        reinterpret_cast<uint64_t*>(std::data(addrs)),
-                                        std::size(addrs),
-                                        &opts),
-        blaze_user_output_free};
-    if (!output)
-    {
-        std::println("blaze_normalize_user_addrs_opts: {}", blaze_err_str(blaze_err_last()));
-        return;
-    }
-        
-    for (std::size_t i = 0; i < std::size(addrs); i++)
-    {
-        const auto& meta = output->metas[output->outputs[i].meta_idx];
-
-        if      (meta.kind == blaze_user_meta_kind::BLAZE_USER_META_UNKNOWN)
-        {
-            std::print("    {:>2}, abs_addr: {:>#18x}, {}",
-                i, addrs[i],
-                blaze_normalize_reason_str(meta.variant.unknown.reason));
-        }
-        else if (meta.kind == blaze_user_meta_kind::BLAZE_USER_META_APK)
-        {
-            std::print("    {:>2}, abs_addr: {:>#18x}, apk: {:40} apk_off: {:>#10x}",
-                i, addrs[i],
-                std::format("\"{}\"", meta.variant.apk.path),
-                output->outputs[i].output);
-        }
-        else if (meta.kind == blaze_user_meta_kind::BLAZE_USER_META_ELF)
-        {
-            std::print("    {:>2}, abs_addr: {:>#18x}, elf: {:40} elf_off: {:>#10x}",
-                i, addrs[i],
-                std::format("\"{}\"", meta.variant.elf.path),
-                output->outputs[i].output);
-
-            // struct bpf_stack_build_id id_off;
-
-            blaze_symbolize_src_elf src =
-            {
-                .type_size  = sizeof(src),
-                .path       = meta.variant.elf.path,
-                .debug_syms = true
-            };
-
-            auto syms = std::unique_ptr<const blaze_syms, decltype(&blaze_syms_free)>{
-                blaze_symbolize_elf_file_offsets(symbolizer,
-                                                 &src,
-                                                 &output->outputs[i].output,
-                                                 1),
-                blaze_syms_free};
-
-            if (syms)
-            {
-                const auto& sym = syms->syms[0];
-                if (sym.reason)
-                    std::print(", \"{}\"", blaze_symbolize_reason_str(sym.reason));
-                else
-                {
-                    std::print(", sym: {}, sym_addr: {:#010x}, sym_off: {:#010x}",
-                        sym.name,
-                        sym.addr,
-                        sym.offset);
-                    
-                    if (sym.code_info.file)
-                        std::print(", file: {}:{}:{}",
-                            sym.code_info.file,
-                            sym.code_info.line,
-                            sym.code_info.column);
-                }
-            }
-            else
-            {
-                std::print(", {}", blaze_err_str(blaze_err_last()));
-            }
-            
-            // if (meta.variant.elf.build_id_len)
-            // {
-            //     std::print(", build_id: ");
-            //     for (auto byte : std::span(meta.variant.elf.build_id,
-            //                                meta.variant.elf.build_id_len))
-            //         std::print("{:02X}", byte);
-            // }
-
-            std::println();
-        }
-    }
-
-    // blaze_symbolize_src_process src =
+    // blaze_normalize_opts opts =
     // {
-    //     .type_size = sizeof(src),
-    //     .pid = tgid,
-    //     .debug_syms = true,
-    //     // .perf_map  = true
-    //     // .map_files = true
+    //     .type_size = sizeof(opts)
     // };
 
-    // static_assert(sizeof(uint64_t) == sizeof(typename std::remove_cvref_t<decltype(addrs)>::value_type));
-
-    // auto syms = std::unique_ptr<const blaze_syms, decltype(&blaze_syms_free)>{
-    //     blaze_symbolize_process_abs_addrs(symbolizer,
-    //                                       &src,
-    //                                       reinterpret_cast<uint64_t*>(std::data(addrs)),
-    //                                       std::size(addrs)),
-    //     blaze_syms_free};
-    // if (!syms)
+    // auto output = std::unique_ptr<blaze_normalized_user_output, decltype(&blaze_user_output_free)>{
+    //     blaze_normalize_user_addrs_opts(normalizer,
+    //                                     tgid,
+    //                                     reinterpret_cast<uint64_t*>(std::data(addrs)),
+    //                                     std::size(addrs),
+    //                                     &opts),
+    //     blaze_user_output_free};
+    // if (!output)
     // {
-    //     std::println("blaze_symbolize_process_abs_addrs: {}", blaze_err_str(blaze_err_last()));
-
-    //     for(std::size_t i = 0; i < std::size(addrs); i++)
-    //         std::println("    #{:<2} {:#014x}", i, addrs[i]);
-
+    //     std::println("blaze_normalize_user_addrs_opts: {}", blaze_err_str(blaze_err_last()));
     //     return;
     // }
+        
+    // for (std::size_t i = 0; i < std::size(addrs); i++)
+    // {
+    //     const auto& meta = output->metas[output->outputs[i].meta_idx];
+
+    //     if      (meta.kind == blaze_user_meta_kind::BLAZE_USER_META_UNKNOWN)
+    //     {
+    //         std::println("    {:>2}, abs_addr: {:>#18x}, {}",
+    //             i, addrs[i],
+    //             blaze_normalize_reason_str(meta.variant.unknown.reason));
+    //     }
+    //     else if (meta.kind == blaze_user_meta_kind::BLAZE_USER_META_APK)
+    //     {
+    //         std::println("    {:>2}, abs_addr: {:>#18x}, apk: {:40} apk_off: {:>#10x}",
+    //             i, addrs[i],
+    //             std::format("\"{}\"", meta.variant.apk.path),
+    //             output->outputs[i].output);
+    //     }
+    //     else if (meta.kind == blaze_user_meta_kind::BLAZE_USER_META_ELF)
+    //     {
+    //         std::print("    {:>2}, abs_addr: {:>#18x}, elf: {:40} elf_off: {:>#10x}",
+    //             i, addrs[i],
+    //             std::format("\"{}\"", meta.variant.elf.path),
+    //             output->outputs[i].output);
+
+    //         // struct bpf_stack_build_id id_off;
+
+    //         blaze_symbolize_src_elf src =
+    //         {
+    //             .type_size  = sizeof(src),
+    //             .path       = meta.variant.elf.path,
+    //             .debug_syms = true
+    //         };
+
+    //         auto syms = std::unique_ptr<const blaze_syms, decltype(&blaze_syms_free)>{
+    //             blaze_symbolize_elf_file_offsets(symbolizer,
+    //                                              &src,
+    //                                              &output->outputs[i].output,
+    //                                              1),
+    //             blaze_syms_free};
+
+    //         if (syms)
+    //         {
+    //             const auto& sym = syms->syms[0];
+    //             if (sym.reason)
+    //                 std::print(", \"{}\"", blaze_symbolize_reason_str(sym.reason));
+    //             else
+    //             {
+    //                 std::print(", sym: {}, sym_addr: {:#010x}, sym_off: {:#010x}",
+    //                     sym.name,
+    //                     sym.addr,
+    //                     sym.offset);
+                    
+    //                 if (sym.code_info.file)
+    //                     std::print(", file: {}:{}:{}",
+    //                         sym.code_info.file,
+    //                         sym.code_info.line,
+    //                         sym.code_info.column);
+    //             }
+    //         }
+    //         else
+    //         {
+    //             std::print(", {}", blaze_err_str(blaze_err_last()));
+    //         }
+
+    //         std::println();
+    //     }
+    // }
+
+    blaze_symbolize_src_process src =
+    {
+        .type_size = sizeof(src),
+        .pid = tgid,
+        .debug_syms = true,
+        // .perf_map  = true
+        // .map_files = true
+    };
+
+    static_assert(sizeof(uint64_t) == sizeof(typename std::remove_cvref_t<decltype(addrs)>::value_type));
+
+    auto syms = std::unique_ptr<const blaze_syms, decltype(&blaze_syms_free)>{
+        blaze_symbolize_process_abs_addrs(symbolizer,
+                                          &src,
+                                          reinterpret_cast<uint64_t*>(std::data(addrs)),
+                                          std::size(addrs)),
+        blaze_syms_free};
+    if (!syms)
+    {
+        std::println("blaze_symbolize_process_abs_addrs: {}", blaze_err_str(blaze_err_last()));
+
+        for(std::size_t i = 0; i < std::size(addrs); i++)
+            std::println("    #{:<2} {:#014x}", i, addrs[i]);
+
+        return;
+    }
 
     // sudo eBFP/blazesym/target/debug/blazecli symbolize process --pid 259062 0x005642ad65d095
     // 0x005642ad65d095: _start @ 0x1070+0x25
 
-    // for(std::size_t i = 0; i < std::size(addrs); i++)
-    // {
-    //     std::print("    #{:<2} {:#014x} in {:<20}",
-    //         i, addrs[i],
-    //         syms->syms[i].name ? syms->syms[i].name : "null");
+    for(std::size_t i = 0; i < std::size(addrs); i++)
+    {
+        std::print("    #{:<2} {:#014x} in {:<20}",
+            i, addrs[i],
+            syms->syms[i].name ? syms->syms[i].name : "null");
 
-    //     if (syms->syms[i].reason)
-    //         std::println(" {}", blaze_symbolize_reason_str(syms->syms[i].reason));
-    //     else
-    //         std::println(" sym_addr: {:#014x}, sym_off: {:#010x}, name: {}:{}:{}",
-    //             syms->syms[i].addr,
-    //             syms->syms[i].offset,
-    //             syms->syms[i].code_info.file ? syms->syms[i].code_info.file : "null",
-    //             syms->syms[i].code_info.line,
-    //             syms->syms[i].code_info.column);
-    // }
+        if (syms->syms[i].reason)
+            std::println(" {}", blaze_symbolize_reason_str(syms->syms[i].reason));
+        else
+            std::println(" sym_addr: {:#014x}, sym_off: {:#010x}, name: {}:{}:{}",
+                syms->syms[i].addr,
+                syms->syms[i].offset,
+                syms->syms[i].code_info.file ? syms->syms[i].code_info.file : "null",
+                syms->syms[i].code_info.line,
+                syms->syms[i].code_info.column);
+    }
 }
 
 struct execve_argument
@@ -680,24 +672,24 @@ public:
             // areas.clear();
         }
 
-        std::println("    "
-            "tgid: {}, "
-            "pid: {}, "
-            "addr: {:x}, "
-            "len: {}, "
-            "prot: {}, "
-            "flags: {}, "
-            "pgoff: {:x}, "
-            "uf: {:p}",
-            event->tgid,
-            event->pid,
-            event->addr,
-            event->len,
-            event->prot,
-            event->flags,
-            event->pgoff,
-            (void*)event->uf
-        );
+        // std::println("    "
+        //     "tgid: {}, "
+        //     "pid: {}, "
+        //     "addr: {:x}, "
+        //     "len: {}, "
+        //     "prot: {}, "
+        //     "flags: {}, "
+        //     "pgoff: {:x}, "
+        //     "uf: {:p}",
+        //     event->tgid,
+        //     event->pid,
+        //     event->addr,
+        //     event->len,
+        //     event->prot,
+        //     event->flags,
+        //     event->pgoff,
+        //     (void*)event->uf
+        // );
     }
 };
 
@@ -731,9 +723,17 @@ public:
                                          &event->stack_id, sizeof(event->stack_id),
                                          std::data(stack), sizeof(stack), 0);
         if (error < 0)
+        {
+            std::println("error: bpf_map__lookup_elem");
             return;
+        }
 
-        const auto& areas = vm_area_map_[event->pid_tgid];
+        std::span<decltype(stack)::value_type> addrs{
+            std::begin(stack),
+            std::ranges::find(stack, 0)};
+        print_stack_trace(normalizer_, symbolizer_, event->tgid, addrs);
+
+        const auto& areas = vm_area_map_.at(event->pid_tgid);
 
         for (const auto& addr : stack)
         {
@@ -777,7 +777,8 @@ public:
                                                  1),
                 blaze_syms_free};
 
-            std::print("    elf: {:40} elf_off: {:>#10x}",
+            std::print("    addr: {:#014x} elf: {:40} elf_off: {:>#10x}",
+                addr,
                 find_path->second,
                 elf_file_offset);
 
@@ -807,11 +808,6 @@ public:
 
             std::println();
         }
-        
-        // std::span<decltype(stack)::value_type> addrs{
-        //     std::begin(stack),
-        //     std::ranges::find(stack, 0)};
-        // print_stack_trace(normalizer_, symbolizer_, event->tgid, addrs);
     }
 };
 
