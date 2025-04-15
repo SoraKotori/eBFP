@@ -413,7 +413,7 @@ public:
 class sys_exit_read_handler
 {
     std::unordered_map<__u64, read_argument>& map_;
-    std::unordered_map<path, std::string, path_hash, path_equal>& names_map_;
+    const std::unordered_map<path, std::string, path_hash, path_equal>& names_map_;
 
 public:
     sys_exit_read_handler(decltype(map_) map, decltype(names_map_) names_map) :
@@ -595,7 +595,7 @@ public:
 class sys_exit_handler
 {
 public:
-    void operator()(int cpu, void *data, __u32 size)
+    void operator()(int cpu, void *data, __u32 size) const
     {
         auto event = static_cast<sys_exit_event*>(data);
 
@@ -696,6 +696,8 @@ public:
             if  (find_area == std::begin(areas) || (--find_area)->vm_end <= key.vm_start)
             {
                 // addr: 0x000000f22ec4 elf: /root/.vscode-server/extensions/ms-vscode.cpptools-1.24.5-linux-x64/bin/cpptools-srv elf_off:   0xb22ec4, sym: std::__basic_file<char>::open(char const*, std::_Ios_Openmode, int), sym_addr: 0x00f22e90, sym_off: 0x00000034, file: basic_file.cc:260:16
+                // warning: not find area, start: 0x7ffc5c58d000, end: 0x7ffc5c58f000, addr: 0x2567646573257325
+                // addr: 0x000000f22ec4 elf: /root/.vscode-server/extensions/ms-vscode.cpptools-1.24.5-linux-x64/bin/cpptools-srv elf_off:   0xb22ec4, sym: std::__basic_file<char>::open(char const*, std::_Ios_Openmode, int), sym_addr: 0x00f22e90, sym_off: 0x00000034, file: basic_file.cc:260:16
                 // warning: not find area, start: 0x7ffc632bd000, end: 0x7ffc632bf000, addr: 0x2567646573257325
                 // addr: 0x000000f22ec4 elf: /root/.vscode-server/extensions/ms-vscode.cpptools-1.24.5-linux-x64/bin/cpptools-srv elf_off:   0xb22ec4, sym: std::__basic_file<char>::open(char const*, std::_Ios_Openmode, int), sym_addr: 0x00f22e90, sym_off: 0x00000034, file: basic_file.cc:260:16
                 // warning: not find area, start: 0x7fff0eb5f000, end: 0x7fff0eb61000, addr: 0x2567646573257325
@@ -720,8 +722,7 @@ public:
             }
 
             auto elf_off = addr - find_area->vm_start + find_area->vm_pgoff * 4096;
-            std::print("    addr: {:#014x} elf: {:40} elf_off: {:>#10x}",
-                addr,
+            std::print("    elf: {:40} elf_off: {:>#10x}",
                 find_path->second,
                 elf_off);
 
@@ -773,7 +774,7 @@ class event_handler
 {
     std::array<std::function<void(int, void*, __u32)>, number> handlers_{};
 
-    void handle_event(int cpu, void *data, __u32 size)
+    void handle_event(int cpu, void *data, __u32 size) const
     {
         auto event = static_cast<event_base*>(data);
         if (handlers_[event->event_id])

@@ -394,8 +394,7 @@ int vm_area_tailcall(struct bpf_raw_tracepoint_args *ctx)
         // bpf_core_read(&area->path,     sizeof(area->path),     &vma->vm_file->f_path);
         // bpf_core_read(&vma,            sizeof(vma),            &vma->vm_next);
 
-        if (area->path.dentry &&
-            bpf_map_update_elem(&path_map, &area->path, &zero, BPF_NOEXIST) == 0)
+        if (bpf_map_update_elem(&path_map, &area->path, &zero, BPF_NOEXIST) == 0)
         {
             paths[path_i & (MAX_AREA - 1)] = area->path;
             path_i++;
@@ -930,7 +929,7 @@ int BPF_KPROBE(kretprobe__do_mmap)
     CHECK_ERROR(bpf_map_delete_elem(&do_mmap_map, &nsdata));
 
     error = bpf_map_update_elem(&path_map, &event.path, &zero, BPF_NOEXIST);
-    if  (error == 0)
+    if (error == 0)
         CHECK_ERROR(path_output(ctx, &event.path));
     else if (error != -17) // EEXIST (File exists)
         CHECK_ERROR(error);
