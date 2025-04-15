@@ -138,7 +138,8 @@ struct stack_event
     struct event_base base;
 
     PID_TGID_UNION;
-    __u32 stack_id;
+    __u32 addr_size;
+    unsigned long addrs[PERF_MAX_STACK_DEPTH];
 };
 
 struct sched_process_exit_event

@@ -74,12 +74,11 @@ struct {
 } read_map SEC(".maps");
 
 struct {
-    __uint(type, BPF_MAP_TYPE_STACK_TRACE);
-    __uint(max_entries, MAX_ENTRIES);
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(max_entries, 1);
     __type(key, u32);
-    __type(value, u64[PERF_MAX_STACK_DEPTH]);
-    // __uint(sample_flags, BPF_F_STACK_BUILD_ID);
-} stack_trace SEC(".maps");
+    __type(value, struct stack_event);
+} stack_buffer SEC(".maps");
 
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
@@ -331,17 +330,21 @@ int stack_tailcall(struct bpf_raw_tracepoint_args* ctx)
 {
     const u32 zero = 0;
 
-    struct vm_area_event* vm_area_event = CHECK_PTR(bpf_map_lookup_elem(&vm_area_buffer, &zero));
+    struct stack_event   *stack_event   = CHECK_PTR(bpf_map_lookup_elem(&stack_buffer,   &zero));
+    struct vm_area_event *vm_area_event = CHECK_PTR(bpf_map_lookup_elem(&vm_area_buffer, &zero));
 
-    INIT_EVENT(event, stack_event,
-        .pid_tgid = vm_area_event->pid_tgid,
-        .stack_id = CHECK_ERROR(bpf_get_stackid(ctx, &stack_trace, BPF_F_USER_STACK))
-            //  |
-            //                                                        BPF_F_REUSE_STACKID))
-    );
+    long size = CHECK_ERROR(bpf_get_stack(ctx,
+                                          stack_event->addrs,
+                                          sizeof(stack_event->addrs),
+                                          BPF_F_USER_STACK));
 
-    CHECK_ERROR(bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU,
-                                      &event, sizeof(event)));
+    stack_event->base.event_id = EVENT_ID(stack_event);
+    stack_event->pid_tgid      = vm_area_event->pid_tgid;
+    stack_event->addr_size     = size / sizeof(*stack_event->addrs);
+
+    CHECK_ERROR(bpf_perf_event_output(
+        ctx, &events, BPF_F_CURRENT_CPU, stack_event,
+        offsetof(struct stack_event, addrs) + size));
 
     return 0;
 }
@@ -740,8 +743,7 @@ SEC("kprobe/do_coredump")
 int BPF_KPROBE(kprobe__do_coredump, const kernel_siginfo_t *siginfo)
 {
     INIT_EVENT(event, do_coredump_event,
-        .pid_tgid = bpf_get_current_pid_tgid(),
-        .stack_id = CHECK_ERROR(bpf_get_stackid(ctx, &stack_trace, BPF_F_USER_STACK))
+        .pid_tgid = bpf_get_current_pid_tgid()
     );
 
     CHECK_ERROR(BPF_CORE_READ_INTO(&event.si_signo, siginfo, si_signo));

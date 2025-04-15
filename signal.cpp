@@ -586,32 +586,15 @@ void handle_sched_process_exit(int cpu, void *data, __u32 size)
 class do_coredump_handler
 {
     blaze_symbolizer* symbolizer_;
-    bpf_map* stack_trace_;
 
 public:
-    do_coredump_handler(blaze_symbolizer* symbolizer, bpf_map* stack_trace) :
-        symbolizer_{symbolizer},
-        stack_trace_{stack_trace}
+    do_coredump_handler(blaze_symbolizer* symbolizer) :
+        symbolizer_{symbolizer}
     {}
 
     void operator()(int cpu, void *data, __u32 size)
     {
         auto event = static_cast<do_coredump_event*>(data);
-
-        std::array<__u64, PERF_MAX_STACK_DEPTH> stack;
-        int error = bpf_map__lookup_elem(stack_trace_,
-                                         &event->stack_id, sizeof(event->stack_id),
-                                         std::data(stack), sizeof(stack), 0);
-        if (error < 0)
-            return;
-
-        for (auto [i, address] : std::ranges::enumerate_view(stack))
-        {
-            if (address == 0)
-                break;
-
-            std::println("    #{} {:#014x}", i, address);
-        }
     }
 };
 
@@ -697,19 +680,16 @@ class stack_handler
 {
     blaze_normalizer* normalizer_;
     blaze_symbolizer* symbolizer_;
-    bpf_map* stack_trace_;
-    std::unordered_map<__u64, std::set<vm_area_event::vm_area, vm_area_comp>>& vm_area_map_;
-    std::unordered_map<path,  std::string, path_hash, path_equal>& names_map_;
+    const std::unordered_map<__u64, std::set<vm_area_event::vm_area, vm_area_comp>>& vm_area_map_;
+    const std::unordered_map<path,  std::string, path_hash, path_equal>& names_map_;
 
 public:
     stack_handler(blaze_normalizer* normalizer,
                   blaze_symbolizer* symbolizer,
-                  bpf_map* stack_trace,
                   decltype(vm_area_map_) vm_area_map,
                   decltype(names_map_) names_map) :
         normalizer_{normalizer},
         symbolizer_{symbolizer},
-        stack_trace_{stack_trace},
         vm_area_map_{vm_area_map},
         names_map_{names_map}
     {}
@@ -718,35 +698,20 @@ public:
     {
         auto event = static_cast<stack_event*>(data);
 
-        std::array<uint64_t, PERF_MAX_STACK_DEPTH> stack;
-        int error = bpf_map__lookup_elem(stack_trace_,
-                                         &event->stack_id, sizeof(event->stack_id),
-                                         std::data(stack), sizeof(stack), 0);
-        if (error < 0)
-        {
-            std::println("error: bpf_map__lookup_elem");
-            return;
-        }
-
-        std::span<decltype(stack)::value_type> addrs{
-            std::begin(stack),
-            std::ranges::find(stack, 0)};
-        print_stack_trace(normalizer_, symbolizer_, event->tgid, addrs);
-
         const auto& areas = vm_area_map_.at(event->pid_tgid);
+        const auto  addrs = std::span<unsigned long>{event->addrs, event->addr_size};
+        // print_stack_trace(normalizer_, symbolizer_, event->tgid, addrs);
 
-        for (const auto& addr : stack)
+        for (const auto& addr : addrs)
         {
-            if (addr == 0)
-                break;
-
             vm_area_event::vm_area key = { .vm_start = addr };
 
             auto find_area = areas.upper_bound(key);
-            if  (find_area == std::begin(areas) || key.vm_start >= (--find_area)->vm_end)
+            if  (find_area == std::begin(areas) || (--find_area)->vm_end <= key.vm_start)
             {
-                // 如果 user space 來不及處理 kernel 的資訊時，會觸發錯誤
-                std::println("error: not find area, start: {:x}, end: {:x}, addr: {:x}",
+                // error: not find area, start: 0x7ffecb5e6000, end: 0x7ffecb5e8000, addr: 0x2567646573257325
+                // 有時候會出現很大的 stack address
+                std::println("error: not find area, start: {:#x}, end: {:#x}, addr: {:#x}",
                     find_area->vm_start,
                     find_area->vm_end,
                     key.vm_start);
@@ -756,10 +721,15 @@ public:
             auto find_path = names_map_.find(find_area->path);
             if  (find_path == std::end(names_map_))
             {
-                // 如果 user space 來不及處理 kernel 的資訊時，會觸發錯誤
                 std::println("error: not find path");
                 continue;
             }
+
+            auto elf_off = addr - find_area->vm_start + find_area->vm_pgoff * 4096;
+            std::print("    addr: {:#014x} elf: {:40} elf_off: {:>#10x}",
+                addr,
+                find_path->second,
+                elf_off);
 
             blaze_symbolize_src_elf src =
             {
@@ -768,19 +738,12 @@ public:
                 .debug_syms = true
             };
 
-            auto elf_file_offset = addr - find_area->vm_start + find_area->vm_pgoff * 4096;
-
             auto syms = std::unique_ptr<const blaze_syms, decltype(&blaze_syms_free)>{
                 blaze_symbolize_elf_file_offsets(symbolizer_,
                                                  &src,
-                                                 &elf_file_offset,
+                                                 &elf_off,
                                                  1),
                 blaze_syms_free};
-
-            std::print("    addr: {:#014x} elf: {:40} elf_off: {:>#10x}",
-                addr,
-                find_path->second,
-                elf_file_offset);
 
             if (syms)
             {
@@ -987,9 +950,9 @@ int main(int argc, char *argv[])
     handler[EVENT_ID(sys_exit_read_event)]      = sys_exit_read_handler{read_map, names_map};
     handler[EVENT_ID(path_event)]               = path_handler{names_map, skeleton->maps.path_map};
     handler[EVENT_ID(vm_area_event)]            = vm_area_handler{vm_area_map, names_map};
-    handler[EVENT_ID(stack_event)]              = stack_handler{normalizer.get(), symbolizer.get(), skeleton->maps.stack_trace, vm_area_map, names_map};
+    handler[EVENT_ID(stack_event)]              = stack_handler{normalizer.get(), symbolizer.get(), vm_area_map, names_map};
     handler[EVENT_ID(sched_process_exit_event)] = handle_sched_process_exit;
-    handler[EVENT_ID(do_coredump_event)]        = do_coredump_handler{symbolizer.get(), skeleton->maps.stack_trace};
+    handler[EVENT_ID(do_coredump_event)]        = do_coredump_handler{symbolizer.get()};
     handler[EVENT_ID(sys_exit_event)]           = sys_exit_handler{normalizer.get(), symbolizer.get()};
     handler[EVENT_ID(do_mmap_event)]            = do_mmap_handler{vm_area_map};
 
@@ -1008,13 +971,9 @@ int main(int argc, char *argv[])
     };
 
     if (perf_buffer_ptr == nullptr)
-    {
-        int error = -errno;
-        fprintf(stderr, "Failed to create perf buffer: %d\n", error);
-        return EXIT_FAILURE;
-    }
+        throw std::system_error{-errno, std::system_category(), "Failed to create perf buffer"};
 
-    printf("Successfully started! Ctrl+C to stop.\n");
+    std::println("Successfully started! Ctrl+C to stop.");
 
     // 進入 poll loop
     while (!g_signal_status)
