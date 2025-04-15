@@ -580,6 +580,7 @@ int tracepoint__syscalls__sys_exit_kill(struct trace_event_raw_sys_exit *ctx)
     if (NULL == bpf_map_lookup_elem(&kill_map, &event.pid_tgid))
         return 0;
 
+    // 即便 key 不存在，也會成功刪除，所以不能用 ENOENT 作為判斷
     CHECK_ERROR(bpf_map_delete_elem(&kill_map, &event.pid_tgid));
     
     CHECK_ERROR(bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU,

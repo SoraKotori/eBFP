@@ -709,6 +709,11 @@ public:
             auto find_area = areas.upper_bound(key);
             if  (find_area == std::begin(areas) || (--find_area)->vm_end <= key.vm_start)
             {
+                // addr: 0x000000f22ec4 elf: /root/.vscode-server/extensions/ms-vscode.cpptools-1.24.5-linux-x64/bin/cpptools-srv elf_off:   0xb22ec4, sym: std::__basic_file<char>::open(char const*, std::_Ios_Openmode, int), sym_addr: 0x00f22e90, sym_off: 0x00000034, file: basic_file.cc:260:16
+                // error: not find area, start: 0x7ffd427a2000, end: 0x7ffd427a4000, addr: 0x2567646573257325
+                // addr: 0x000000f22ec4 elf: /root/.vscode-server/extensions/ms-vscode.cpptools-1.24.5-linux-x64/bin/cpptools-srv elf_off:   0xb22ec4, sym: std::__basic_file<char>::open(char const*, std::_Ios_Openmode, int), sym_addr: 0x00f22e90, sym_off: 0x00000034, file: basic_file.cc:260:16
+                // error: not find area, start: 0x7ffd9d5e7000, end: 0x7ffd9d5e9000, addr: 0x2567646573257325
+                // error: not find area, start: 0x7fff889cb000, end: 0x7fff889cd000, addr: 0x2567646573257325
                 // error: not find area, start: 0x7ffecb5e6000, end: 0x7ffecb5e8000, addr: 0x2567646573257325
                 // 有時候會出現很大的 stack address
                 std::println("error: not find area, start: {:#x}, end: {:#x}, addr: {:#x}",
@@ -828,21 +833,21 @@ int main(int argc, char *argv[])
     auto skeleton = std::unique_ptr<signal_bpf, decltype(&signal_bpf::destroy)>{
                                     signal_bpf::open(),   signal_bpf::destroy};
     if (!skeleton)
-        return EXIT_FAILURE;
+        throw std::system_error{-errno, std::system_category()};
 
     int  error = 0;
     bool disable_read = true;
     if  (disable_read)
     {
         if ((error = bpf_program__set_autoload(skeleton->progs.tracepoint__syscalls__sys_enter_read, false)) < 0)
-            return EXIT_FAILURE;
+            throw std::system_error{-error, std::system_category()};
         if ((error = bpf_program__set_autoload(skeleton->progs.tracepoint__syscalls__sys_exit_read, false)) < 0)
-            return EXIT_FAILURE;
+            throw std::system_error{-error, std::system_category()};
     }
 
     // load eBPF skeleton
     if ((error = signal_bpf::load(skeleton.get())) < 0)
-        return EXIT_FAILURE;
+        throw std::system_error{-error, std::system_category()};
 
     __u32 zero = 0;
     char pattern[MAX_ARG_LEN] = "";
@@ -851,17 +856,17 @@ int main(int argc, char *argv[])
     if ((error = bpf_map__update_elem(skeleton->maps.command_pattern,
                                       &zero, sizeof(zero),
                                       pattern, sizeof(pattern), BPF_ANY)) < 0)
-        return EXIT_FAILURE;
+        throw std::system_error{-error, std::system_category()};
 
     // update read_content flag to bpf map
     if ((error = bpf_map__update_elem(skeleton->maps.read_content,
                                       &zero, sizeof(zero),
                                       &zero, sizeof(zero), BPF_ANY)) < 0)
-        return EXIT_FAILURE;
+        throw std::system_error{-error, std::system_category()};
 
     struct stat st{};
     if ((error = stat("/proc/self/ns/pid", &st)) < 0)
-        return EXIT_FAILURE;
+        throw std::system_error{-error, std::system_category()};
 
     self_t self =
     {
@@ -875,7 +880,7 @@ int main(int argc, char *argv[])
     if ((error = bpf_map__update_elem(skeleton->maps.self_map,
                                       &zero, sizeof(zero),
                                       &self, sizeof(self), BPF_ANY)) < 0)
-        return EXIT_FAILURE;
+        throw std::system_error{-error, std::system_category()};
 
     std::array<__u64, MAX_SYSCALL> negative_ret{};
     set_ret(negative_ret, __NR_open);
@@ -886,11 +891,7 @@ int main(int argc, char *argv[])
     if ((error = bpf_map__update_elem(skeleton->maps.negative_ret_map,
                                       &zero, sizeof(zero),
                                       std::data(negative_ret), sizeof(negative_ret), BPF_ANY)) < 0)
-        return EXIT_FAILURE;
-
-    // attach eBPF 程式到對應的 tracepoint
-    if ((error = signal_bpf::attach(skeleton.get())) < 0)
-        return EXIT_FAILURE;
+        throw std::system_error{-error, std::system_category()};
 
     const char *debug_dirs[] = { "/usr/lib/debug",
                                  "/lib/debug",
@@ -907,7 +908,7 @@ int main(int argc, char *argv[])
         // .auto_reload = true, // 可選：若 ELF 檔有變更，自動 reload
         .code_info = true,   // 啟用 DWARF 行號資訊解析
         // .inlined_fns = true, // 可選：還原 inline 函數
-        // .demangle = true     // 可選：還原 C++ / Rust 函數名稱
+        .demangle = true     // 還原 C++ / Rust 函數名稱
     };
 
     auto symbolizer = std::unique_ptr<blaze_symbolizer, decltype(&blaze_symbolizer_free)>{
@@ -971,7 +972,11 @@ int main(int argc, char *argv[])
     };
 
     if (perf_buffer_ptr == nullptr)
-        throw std::system_error{-errno, std::system_category(), "Failed to create perf buffer"};
+        throw std::system_error{-errno, std::system_category()};
+
+    // attach eBPF 程式到對應的 tracepoint
+    if ((error = signal_bpf::attach(skeleton.get())) < 0)
+        throw std::system_error{-error, std::system_category()};
 
     std::println("Successfully started! Ctrl+C to stop.");
 
