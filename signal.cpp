@@ -494,7 +494,7 @@ public:
         auto [iterator, inserted] = names_map_.try_emplace(event->path, new_name);
         if   (inserted == false)
         {
-            std::println("error: names_map_.try_emplace.inserted == false\n"
+            std::println("warning: names_map_.try_emplace.inserted == false\n"
                          "    old_path: {}\n"
                          "    new_path: {}", iterator->second, new_name);
         }
@@ -585,13 +585,7 @@ void handle_sched_process_exit(int cpu, void *data, __u32 size)
 
 class do_coredump_handler
 {
-    blaze_symbolizer* symbolizer_;
-
 public:
-    do_coredump_handler(blaze_symbolizer* symbolizer) :
-        symbolizer_{symbolizer}
-    {}
-
     void operator()(int cpu, void *data, __u32 size)
     {
         auto event = static_cast<do_coredump_event*>(data);
@@ -600,15 +594,7 @@ public:
 
 class sys_exit_handler
 {
-    blaze_normalizer* normalizer_;
-    blaze_symbolizer* symbolizer_;
-
 public:
-    sys_exit_handler(blaze_normalizer* normalizer, blaze_symbolizer* symbolizer) :
-        normalizer_{normalizer},
-        symbolizer_{symbolizer}
-    {}
-
     void operator()(int cpu, void *data, __u32 size)
     {
         auto event = static_cast<sys_exit_event*>(data);
@@ -710,13 +696,15 @@ public:
             if  (find_area == std::begin(areas) || (--find_area)->vm_end <= key.vm_start)
             {
                 // addr: 0x000000f22ec4 elf: /root/.vscode-server/extensions/ms-vscode.cpptools-1.24.5-linux-x64/bin/cpptools-srv elf_off:   0xb22ec4, sym: std::__basic_file<char>::open(char const*, std::_Ios_Openmode, int), sym_addr: 0x00f22e90, sym_off: 0x00000034, file: basic_file.cc:260:16
-                // error: not find area, start: 0x7ffd427a2000, end: 0x7ffd427a4000, addr: 0x2567646573257325
+                // warning: not find area, start: 0x7ffc632bd000, end: 0x7ffc632bf000, addr: 0x2567646573257325
                 // addr: 0x000000f22ec4 elf: /root/.vscode-server/extensions/ms-vscode.cpptools-1.24.5-linux-x64/bin/cpptools-srv elf_off:   0xb22ec4, sym: std::__basic_file<char>::open(char const*, std::_Ios_Openmode, int), sym_addr: 0x00f22e90, sym_off: 0x00000034, file: basic_file.cc:260:16
-                // error: not find area, start: 0x7ffd9d5e7000, end: 0x7ffd9d5e9000, addr: 0x2567646573257325
-                // error: not find area, start: 0x7fff889cb000, end: 0x7fff889cd000, addr: 0x2567646573257325
-                // error: not find area, start: 0x7ffecb5e6000, end: 0x7ffecb5e8000, addr: 0x2567646573257325
+                // warning: not find area, start: 0x7fff0eb5f000, end: 0x7fff0eb61000, addr: 0x2567646573257325
+                // addr: 0x000000f22ec4 elf: /root/.vscode-server/extensions/ms-vscode.cpptools-1.24.5-linux-x64/bin/cpptools-srv elf_off:   0xb22ec4, sym: std::__basic_file<char>::open(char const*, std::_Ios_Openmode, int), sym_addr: 0x00f22e90, sym_off: 0x00000034, file: basic_file.cc:260:16
+                // warning: not find area, start: 0x7ffd427a2000, end: 0x7ffd427a4000, addr: 0x2567646573257325
+                // addr: 0x000000f22ec4 elf: /root/.vscode-server/extensions/ms-vscode.cpptools-1.24.5-linux-x64/bin/cpptools-srv elf_off:   0xb22ec4, sym: std::__basic_file<char>::open(char const*, std::_Ios_Openmode, int), sym_addr: 0x00f22e90, sym_off: 0x00000034, file: basic_file.cc:260:16
+                // warning: not find area, start: 0x7ffd9d5e7000, end: 0x7ffd9d5e9000, addr: 0x2567646573257325
                 // 有時候會出現很大的 stack address
-                std::println("error: not find area, start: {:#x}, end: {:#x}, addr: {:#x}",
+                std::println("warning: not find area, start: {:#x}, end: {:#x}, addr: {:#x}",
                     find_area->vm_start,
                     find_area->vm_end,
                     key.vm_start);
@@ -726,7 +714,8 @@ public:
             auto find_path = names_map_.find(find_area->path);
             if  (find_path == std::end(names_map_))
             {
-                std::println("error: not find path");
+                std::println("warning: not find path, names_map.size(): {}",
+                    std::size(names_map_));
                 continue;
             }
 
@@ -829,30 +818,17 @@ int main(int argc, char *argv[])
     if (SIG_ERR == std::signal(SIGINT,  signal_handler)) return EXIT_FAILURE;
     if (SIG_ERR == std::signal(SIGTERM, signal_handler)) return EXIT_FAILURE;
 
-    // open eBPF skeleton
-    auto skeleton = std::unique_ptr<signal_bpf, decltype(&signal_bpf::destroy)>{
-                                    signal_bpf::open(),   signal_bpf::destroy};
+    // open and load eBPF skeleton
+    auto skeleton = std::unique_ptr<signal_bpf,        decltype(&signal_bpf::destroy)>{
+                                    signal_bpf::open_and_load(), signal_bpf::destroy};
     if (!skeleton)
         throw std::system_error{-errno, std::system_category()};
 
-    int  error = 0;
-    bool disable_read = true;
-    if  (disable_read)
-    {
-        if ((error = bpf_program__set_autoload(skeleton->progs.tracepoint__syscalls__sys_enter_read, false)) < 0)
-            throw std::system_error{-error, std::system_category()};
-        if ((error = bpf_program__set_autoload(skeleton->progs.tracepoint__syscalls__sys_exit_read, false)) < 0)
-            throw std::system_error{-error, std::system_category()};
-    }
-
-    // load eBPF skeleton
-    if ((error = signal_bpf::load(skeleton.get())) < 0)
-        throw std::system_error{-error, std::system_category()};
-
-    __u32 zero = 0;
+    const __u32 zero = 0;
     char pattern[MAX_ARG_LEN] = "";
 
     // update pattern to bpf map
+    int  error = 0;
     if ((error = bpf_map__update_elem(skeleton->maps.command_pattern,
                                       &zero, sizeof(zero),
                                       pattern, sizeof(pattern), BPF_ANY)) < 0)
@@ -953,8 +929,8 @@ int main(int argc, char *argv[])
     handler[EVENT_ID(vm_area_event)]            = vm_area_handler{vm_area_map, names_map};
     handler[EVENT_ID(stack_event)]              = stack_handler{normalizer.get(), symbolizer.get(), vm_area_map, names_map};
     handler[EVENT_ID(sched_process_exit_event)] = handle_sched_process_exit;
-    handler[EVENT_ID(do_coredump_event)]        = do_coredump_handler{symbolizer.get()};
-    handler[EVENT_ID(sys_exit_event)]           = sys_exit_handler{normalizer.get(), symbolizer.get()};
+    handler[EVENT_ID(do_coredump_event)]        = do_coredump_handler{};
+    handler[EVENT_ID(sys_exit_event)]           = sys_exit_handler{};
     handler[EVENT_ID(do_mmap_event)]            = do_mmap_handler{vm_area_map};
 
     // perf buffer 選項
@@ -972,7 +948,14 @@ int main(int argc, char *argv[])
     };
 
     if (perf_buffer_ptr == nullptr)
-        throw std::system_error{-errno, std::system_category()};
+        throw std::system_error{-errno, std::system_category(), "Failed to create perf buffer"};
+
+    bool disable_read = true;
+    if  (disable_read)
+    {
+        bpf_program__set_autoattach(skeleton->progs.tracepoint__syscalls__sys_enter_read, false);
+        bpf_program__set_autoattach(skeleton->progs.tracepoint__syscalls__sys_exit_read, false);
+    }
 
     // attach eBPF 程式到對應的 tracepoint
     if ((error = signal_bpf::attach(skeleton.get())) < 0)
@@ -983,12 +966,9 @@ int main(int argc, char *argv[])
     // 進入 poll loop
     while (!g_signal_status)
     {
-        int error = perf_buffer__poll(perf_buffer_ptr.get(), 100 /* ms */);
-        if (error < 0 && error != -EINTR)
-        {
-            fprintf(stderr, "Error polling perf buffer: %d\n", error);
-            break;
-        }
+        if ((error = perf_buffer__poll(perf_buffer_ptr.get(), 100 /* ms */)) < 0 &&
+             error != -EINTR)
+            throw std::system_error{-error, std::system_category(), "Error polling perf buffer"};
     }
 
     return 0;

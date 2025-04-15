@@ -276,6 +276,7 @@ long path_output(void *ctx, const struct path *path)
     return 0;
 }
 
+// 沒辦法回傳錯誤，觸發 CHECK_ERROR 後，只會回傳 0
 static __always_inline
 long try_update_path(void *ctx, const struct path *path)
 {
