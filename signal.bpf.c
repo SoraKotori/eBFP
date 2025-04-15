@@ -577,11 +577,10 @@ int tracepoint__syscalls__sys_exit_kill(struct trace_event_raw_sys_exit *ctx)
     );
 
     // 檢查 kill_map 判斷是否要處理 signal
-    long error = bpf_map_delete_elem(&kill_map, &event.pid_tgid);
-    if  (error == -2) // -ENOENT (No such file or directory)
+    if (NULL == bpf_map_lookup_elem(&kill_map, &event.pid_tgid))
         return 0;
-    else
-        CHECK_ERROR(error);
+
+    CHECK_ERROR(bpf_map_delete_elem(&kill_map, &event.pid_tgid));
     
     CHECK_ERROR(bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU,
                                       &event, sizeof(event)));

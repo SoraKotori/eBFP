@@ -458,7 +458,7 @@ public:
             event->fd,
             permission,
             mode,
-            names_map_[event->path]);
+            names_map_.at(event->path));
 
         if (event->ret >= 0)
         {
@@ -494,7 +494,7 @@ public:
         auto [iterator, inserted] = names_map_.try_emplace(event->path, new_name);
         if   (inserted == false)
         {
-            std::println("error: insert_or_assign.inserted == false\n"
+            std::println("error: names_map_.try_emplace.inserted == false\n"
                          "    old_path: {}\n"
                          "    new_path: {}", iterator->second, new_name);
         }
@@ -539,26 +539,26 @@ public:
             areas.emplace_hint(std::end(areas), area);
         }
 
-        if (event->area_size != MAX_AREA)
-        {
-            std::println("pid: {:>6}, tid: {:>6}, vm_area, size: {}",
-                event->tgid,
-                event->pid,
-                areas.size());
+        // if (event->area_size != MAX_AREA)
+        // {
+        //     std::println("pid: {:>6}, tid: {:>6}, vm_area, size: {}",
+        //         event->tgid,
+        //         event->pid,
+        //         areas.size());
 
-            // for (const auto& entry : areas)
-            // {
-            //     auto find = names_map_.find(entry.path);
+        //     for (const auto& entry : areas)
+        //     {
+        //         auto find = names_map_.find(entry.path);
 
-            //     std::println("    {:#014x} {:#014x} {:#010x} {:p} {:p} name: {}",
-            //     entry.vm_start,
-            //     entry.vm_end,
-            //     entry.vm_pgoff * 4096,
-            //     entry.path.dentry,
-            //     entry.path.mnt,
-            //     find == std::end(names_map_) ? std::string_view{} : find->second);
-            // }
-        }
+        //         std::println("    {:#014x} {:#014x} {:#010x} {:p} {:p} name: {}",
+        //         entry.vm_start,
+        //         entry.vm_end,
+        //         entry.vm_pgoff * 4096,
+        //         entry.path.dentry,
+        //         entry.path.mnt,
+        //         find == std::end(names_map_) ? std::string_view{} : find->second);
+        //     }
+        // }
     }
 };
 
