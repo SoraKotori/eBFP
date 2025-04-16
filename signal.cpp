@@ -974,6 +974,13 @@ int main(int argc, char *argv[])
         bpf_program__set_autoattach(skeleton->progs.tracepoint__syscalls__sys_exit_read, false);
     }
 
+    bool disable_mmap = true;
+    if  (disable_mmap)
+    {
+        bpf_program__set_autoattach(skeleton->progs.kprobe__do_mmap, false);
+        bpf_program__set_autoattach(skeleton->progs.kretprobe__do_mmap, false);
+    }
+
     // attach eBPF 程式到對應的 tracepoint
     if ((error = signal_bpf::attach(skeleton.get())) < 0)
         throw std::system_error{-error, std::system_category()};

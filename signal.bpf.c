@@ -55,7 +55,7 @@ struct {
 struct read_argument
 {
     int fd;
-    void* buf;
+    void *buf;
     size_t count;
 };
 
@@ -104,7 +104,7 @@ struct {
 struct vm_area_argument
 {
     u32 path_i;
-    struct vm_area_struct* vma;
+    struct vm_area_struct *vma;
 };
 
 struct {
@@ -131,9 +131,9 @@ struct {
 #define TAIL_CALL_ONE 1
 #define TAIL_CALL_TWO 2
 
-int vm_area_tailcall(struct bpf_raw_tracepoint_args*);
-int path_tailcall(struct bpf_raw_tracepoint_args*);
-int stack_tailcall(struct bpf_raw_tracepoint_args*);
+int vm_area_tailcall(struct bpf_raw_tracepoint_args *);
+int path_tailcall(struct bpf_raw_tracepoint_args *);
+int stack_tailcall(struct bpf_raw_tracepoint_args *);
 
 struct {
     __uint(type, BPF_MAP_TYPE_PROG_ARRAY);
@@ -287,10 +287,10 @@ long read_path(char dst[MAX_ARG_LEN], const struct path *path)
 }
 
 static
-long path_output(void *ctx, const struct path *path)
+long output_path(void *ctx, const struct path *path)
 {
     const u32 zero = 0;
-    struct path_event* event = RETURN_NULL(bpf_map_lookup_elem(&path_buffer, &zero));
+    struct path_event *event = RETURN_NULL(bpf_map_lookup_elem(&path_buffer, &zero));
 
     event->base.event_id = EVENT_ID(path_event);
     event->index         = RETURN_ERROR(read_path(event->name, path));
@@ -305,9 +305,10 @@ static __always_inline
 long try_update_path(void *ctx, const struct path *path)
 {
     const u32 zero = 0;
+
     long error = bpf_map_update_elem(&path_map, path, &zero, BPF_NOEXIST);
     if  (error == 0)
-        RETURN_ERROR(path_output(ctx, path));
+        RETURN_ERROR(output_path(ctx, path));
     else if (error != -17) // EEXIST (File exists)
         RETURN_ERROR(error);
 
@@ -320,8 +321,7 @@ int path_tailcall(struct bpf_raw_tracepoint_args *ctx)
     const u32 zero = 0;
 
     struct vm_area_argument *argument = CHECK_NULL(bpf_map_lookup_elem(&vm_area_map, &zero));
-
-    struct path *paths = CHECK_NULL(bpf_map_lookup_elem(&path_percpu, &zero));
+    struct path             *paths    = CHECK_NULL(bpf_map_lookup_elem(&path_percpu, &zero));
 
     u32 path_i = argument->path_i;
 
@@ -334,7 +334,7 @@ int path_tailcall(struct bpf_raw_tracepoint_args *ctx)
             break;
 
         path_i = (path_i - 1) & (MAX_AREA - 1);
-        CHECK_ERROR(path_output(ctx, &paths[i]));
+        CHECK_ERROR(output_path(ctx, &paths[path_i]));
 
         // struct path* path = bpf_map_lookup_elem(&path_percpu, &path_i);
     }
@@ -351,7 +351,7 @@ int path_tailcall(struct bpf_raw_tracepoint_args *ctx)
 }
 
 SEC("raw_tracepoint")
-int stack_tailcall(struct bpf_raw_tracepoint_args* ctx)
+int stack_tailcall(struct bpf_raw_tracepoint_args *ctx)
 {
     const u32 zero = 0;
 
@@ -379,14 +379,12 @@ int vm_area_tailcall(struct bpf_raw_tracepoint_args *ctx)
 {
     const u32 zero = 0;
 
-    struct vm_area_event* event = CHECK_NULL(bpf_map_lookup_elem(&vm_area_buffer, &zero));
-
-    struct vm_area_argument *argument = CHECK_NULL(bpf_map_lookup_elem(&vm_area_map, &zero));
-    
-    struct path *paths = CHECK_NULL(bpf_map_lookup_elem(&path_percpu, &zero));
+    struct vm_area_event    *event    = CHECK_NULL(bpf_map_lookup_elem(&vm_area_buffer, &zero));
+    struct vm_area_argument *argument = CHECK_NULL(bpf_map_lookup_elem(&vm_area_map,    &zero));
+    struct path             *paths    = CHECK_NULL(bpf_map_lookup_elem(&path_percpu,    &zero));
 
     u32 i, path_i = argument->path_i;
-    struct vm_area_struct* vma = argument->vma;
+    struct vm_area_struct *vma = argument->vma;
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 3, 0)
     #pragma unroll
@@ -601,7 +599,7 @@ int tracepoint__syscalls__sys_exit_kill(struct trace_event_raw_sys_exit *ctx)
     );
 
     // 檢查 kill_map 判斷是否要處理 signal
-    if (NULL == bpf_map_lookup_elem(&kill_map, &event.pid_tgid))
+    if (!bpf_map_lookup_elem(&kill_map, &event.pid_tgid))
         return 0;
 
     // 即便 key 不存在，也會成功刪除，所以不能用 ENOENT 作為判斷
@@ -625,9 +623,9 @@ int tracepoint__syscalls__sys_enter_read(struct trace_event_raw_sys_enter *ctx)
 
     struct read_argument argument =
     {
-        .fd    = ctx->args[0],
-        .buf   = (void*)ctx->args[1],
-        .count = ctx->args[2]
+        .fd    =         ctx->args[0],
+        .buf   = (void *)ctx->args[1],
+        .count =         ctx->args[2]
     };
 
     // 更新 read_map 作為 sys_exit_read 的判斷條件
@@ -673,12 +671,8 @@ int tracepoint__syscalls__sys_exit_read(struct trace_event_raw_sys_exit *ctx)
     // 讀取 file 結構中 f_path 欄位
     CHECK_ERROR(BPF_CORE_READ_INTO(&event.exit.path, file, f_path));
 
-    const u32 zero = 0;
-    long error = bpf_map_update_elem(&path_map, &event.exit.path, &zero, BPF_NOEXIST);
-    if  (error == 0)
-        CHECK_ERROR(path_output(ctx, &event.exit.path));
-    else if (error != -17) // EEXIST (File exists)
-        CHECK_ERROR(error);
+    // 若該 path 首次出現，則進行更新
+    CHECK_ERROR(try_update_path(ctx, &event.exit.path));
 
     // ------------------------------------------------------------
 
@@ -702,6 +696,7 @@ int tracepoint__syscalls__sys_exit_read(struct trace_event_raw_sys_exit *ctx)
     // 每個片段包含部分讀取到的使用者資料（透過 bpf_probe_read_user）
     // ------------------------------------------------------------
 
+    const u32 zero = 0;
     u32 *context = CHECK_NULL(bpf_map_lookup_elem(&read_content, &zero));
     if (*context == false || event.exit.ret <= 0)
         return 0;
@@ -733,7 +728,7 @@ int tracepoint__syscalls__sys_exit_read(struct trace_event_raw_sys_exit *ctx)
                                         read_argument.buf + event.enter.index));
 
         // 計算實際的事件大小，避免超過 event.enter 結構大小，主要用途通過驗證器
-        int event_size = offsetof(struct sys_enter_read_event, buf) + event.enter.size;
+        unsigned long event_size = offsetof(struct sys_enter_read_event, buf) + event.enter.size;
         CHECK_SIZE(event_size, sizeof(event.enter));
 
         // 將每個片段的 sys_enter_read_event 傳送到 user space
@@ -796,6 +791,7 @@ int raw_tracepoint__sys_exit(struct bpf_raw_tracepoint_args *ctx)
         .tgid = nsdata.tgid
     );
 
+    // 忽略自身的 process
     if (event.pid_tgid == self->pid_tgid)
         return 0;
 
@@ -803,8 +799,8 @@ int raw_tracepoint__sys_exit(struct bpf_raw_tracepoint_args *ctx)
     CHECK_ERROR(BPF_CORE_READ_INTO(&event.syscall_nr, regs, orig_ax));
     CHECK_ERROR(BPF_CORE_READ_INTO(&event.ret,        regs, ax));
 
-    u64 *ret_map = CHECK_NULL(bpf_map_lookup_elem(event.ret < 0 ? (void*)&negative_ret_map
-                                                                : (void*)&positive_ret_map,
+    u64 *ret_map = CHECK_NULL(bpf_map_lookup_elem(event.ret < 0 ? (void *)&negative_ret_map
+                                                                : (void *)&positive_ret_map,
                                                   &zero));
 
     u64 syscell_idx =      event.syscall_nr / (sizeof(u64) * 8 /* bits */);
@@ -818,9 +814,7 @@ int raw_tracepoint__sys_exit(struct bpf_raw_tracepoint_args *ctx)
 
 
 
-        u32 zero = 0;
-        struct vm_area_event* vm_area_event = CHECK_NULL(bpf_map_lookup_elem(&vm_area_buffer, &zero));
-
+        struct vm_area_event *vm_area_event = CHECK_NULL(bpf_map_lookup_elem(&vm_area_buffer, &zero));
         vm_area_event->base.event_id = EVENT_ID(vm_area_event);
         vm_area_event->pid_tgid      = event.pid_tgid;
         vm_area_event->ktime         = bpf_ktime_get_ns();
@@ -878,13 +872,13 @@ int kprobe__do_mmap(struct pt_regs *ctx)
         CHECK_ERROR(error);
 
     struct mmap_argument argument;
-    argument.file  = (void*)PT_REGS_PARM1_CORE(ctx);
-    argument.addr  =        PT_REGS_PARM2_CORE(ctx);
-    argument.len   =        PT_REGS_PARM3_CORE(ctx);
-    argument.prot  =        PT_REGS_PARM4_CORE(ctx);
-    argument.flags =        PT_REGS_PARM5_CORE(ctx);
+    argument.file  = (void *)PT_REGS_PARM1_CORE(ctx);
+    argument.addr  =         PT_REGS_PARM2_CORE(ctx);
+    argument.len   =         PT_REGS_PARM3_CORE(ctx);
+    argument.prot  =         PT_REGS_PARM4_CORE(ctx);
+    argument.flags =         PT_REGS_PARM5_CORE(ctx);
 
-    unsigned long* sp = (unsigned long *)PT_REGS_SP_CORE(ctx);
+    unsigned long *sp = (unsigned long *)PT_REGS_SP_CORE(ctx);
 
     if (LINUX_KERNEL_VERSION < KERNEL_VERSION(5, 9, 0))
     {
@@ -941,11 +935,7 @@ int BPF_KPROBE(kretprobe__do_mmap)
     // 釋放掉對應的 mmap_argument
     CHECK_ERROR(bpf_map_delete_elem(&do_mmap_map, &nsdata));
 
-    error = bpf_map_update_elem(&path_map, &event.path, &zero, BPF_NOEXIST);
-    if (error == 0)
-        CHECK_ERROR(path_output(ctx, &event.path));
-    else if (error != -17) // EEXIST (File exists)
-        CHECK_ERROR(error);
+    CHECK_ERROR(try_update_path(ctx, &event.path));
 
     CHECK_ERROR(bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU,
                                       &event, sizeof(event)));
