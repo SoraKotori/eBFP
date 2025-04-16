@@ -178,13 +178,38 @@ struct EVENT_TYPE name =                  \
     __err;                  \
 })
 
-#define CHECK_PTR(expr)          \
+#define RETURN_ERROR(expr)  \
+({                          \
+    long __err = (expr);    \
+    if  (__err < 0)         \
+    {                       \
+        PRINT_ERROR(__err); \
+        return __err;       \
+    }                       \
+    __err;                  \
+})
+
+#define PRINT_NULL(expr) \
+    bpf_printk(__FILE__ ":" STR(__LINE__) ": null pointer: " #expr ": %s", __func__); \
+
+#define CHECK_NULL(expr)         \
 ({                               \
     typeof(expr) __ptr = (expr); \
     if (!__ptr)                  \
     {                            \
-        bpf_printk(__FILE__ ":" STR(__LINE__) ": null pointer: " #expr ": %s", __func__); \
+        PRINT_NULL(expr);        \
         return 0;                \
+    }                            \
+    __ptr;                       \
+})
+
+#define RETURN_NULL(expr)        \
+({                               \
+    typeof(expr) __ptr = (expr); \
+    if (!__ptr)                  \
+    {                            \
+        PRINT_NULL(expr);        \
+        return -2; /* ENOENT (No such file or directory) */ \
     }                            \
     __ptr;                       \
 })
@@ -265,27 +290,26 @@ static
 long path_output(void *ctx, const struct path *path)
 {
     const u32 zero = 0;
-    struct path_event* event = CHECK_PTR(bpf_map_lookup_elem(&path_buffer, &zero));
+    struct path_event* event = RETURN_NULL(bpf_map_lookup_elem(&path_buffer, &zero));
 
     event->base.event_id = EVENT_ID(path_event);
-    event->index         = CHECK_ERROR(read_path(event->name, path));
+    event->index         = RETURN_ERROR(read_path(event->name, path));
     event->path          = *path;
 
-    CHECK_ERROR(bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU,
-                                      event, sizeof(*event)));
+    RETURN_ERROR(bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU,
+                                       event, sizeof(*event)));
     return 0;
 }
 
-// 沒辦法回傳錯誤，觸發 CHECK_ERROR 後，只會回傳 0
 static __always_inline
 long try_update_path(void *ctx, const struct path *path)
 {
     const u32 zero = 0;
     long error = bpf_map_update_elem(&path_map, path, &zero, BPF_NOEXIST);
     if  (error == 0)
-        CHECK_ERROR(path_output(ctx, path));
+        RETURN_ERROR(path_output(ctx, path));
     else if (error != -17) // EEXIST (File exists)
-        CHECK_ERROR(error);
+        RETURN_ERROR(error);
 
     return 0;
 }
@@ -295,9 +319,9 @@ int path_tailcall(struct bpf_raw_tracepoint_args *ctx)
 {
     const u32 zero = 0;
 
-    struct vm_area_argument *argument = CHECK_PTR(bpf_map_lookup_elem(&vm_area_map, &zero));
+    struct vm_area_argument *argument = CHECK_NULL(bpf_map_lookup_elem(&vm_area_map, &zero));
 
-    struct path *paths = CHECK_PTR(bpf_map_lookup_elem(&path_percpu, &zero));
+    struct path *paths = CHECK_NULL(bpf_map_lookup_elem(&path_percpu, &zero));
 
     u32 path_i = argument->path_i;
 
@@ -331,8 +355,8 @@ int stack_tailcall(struct bpf_raw_tracepoint_args* ctx)
 {
     const u32 zero = 0;
 
-    struct stack_event   *stack_event   = CHECK_PTR(bpf_map_lookup_elem(&stack_buffer,   &zero));
-    struct vm_area_event *vm_area_event = CHECK_PTR(bpf_map_lookup_elem(&vm_area_buffer, &zero));
+    struct stack_event   *stack_event   = CHECK_NULL(bpf_map_lookup_elem(&stack_buffer,   &zero));
+    struct vm_area_event *vm_area_event = CHECK_NULL(bpf_map_lookup_elem(&vm_area_buffer, &zero));
 
     long size = CHECK_ERROR(bpf_get_stack(ctx,
                                           stack_event->addrs,
@@ -355,11 +379,11 @@ int vm_area_tailcall(struct bpf_raw_tracepoint_args *ctx)
 {
     const u32 zero = 0;
 
-    struct vm_area_event* event = CHECK_PTR(bpf_map_lookup_elem(&vm_area_buffer, &zero));
+    struct vm_area_event* event = CHECK_NULL(bpf_map_lookup_elem(&vm_area_buffer, &zero));
 
-    struct vm_area_argument *argument = CHECK_PTR(bpf_map_lookup_elem(&vm_area_map, &zero));
+    struct vm_area_argument *argument = CHECK_NULL(bpf_map_lookup_elem(&vm_area_map, &zero));
     
-    struct path *paths = CHECK_PTR(bpf_map_lookup_elem(&path_percpu, &zero));
+    struct path *paths = CHECK_NULL(bpf_map_lookup_elem(&path_percpu, &zero));
 
     u32 i, path_i = argument->path_i;
     struct vm_area_struct* vma = argument->vma;
@@ -450,7 +474,7 @@ int tracepoint__syscalls__sys_enter_execve(struct trace_event_raw_sys_enter *ctx
 
     // 從 map 中取得欲比對的 pattern
     const u32 zero = 0;
-    char *pattern = CHECK_PTR(bpf_map_lookup_elem(&command_pattern, &zero));
+    char *pattern = CHECK_NULL(bpf_map_lookup_elem(&command_pattern, &zero));
 
     // 從 tracepoint context 中取得 argv 指標，並取得 argv[0]
     const char *const *argv = NULL;
@@ -678,7 +702,7 @@ int tracepoint__syscalls__sys_exit_read(struct trace_event_raw_sys_exit *ctx)
     // 每個片段包含部分讀取到的使用者資料（透過 bpf_probe_read_user）
     // ------------------------------------------------------------
 
-    u32 *context = CHECK_PTR(bpf_map_lookup_elem(&read_content, &zero));
+    u32 *context = CHECK_NULL(bpf_map_lookup_elem(&read_content, &zero));
     if (*context == false || event.exit.ret <= 0)
         return 0;
 
@@ -758,7 +782,7 @@ SEC("raw_tracepoint/sys_exit")
 int raw_tracepoint__sys_exit(struct bpf_raw_tracepoint_args *ctx)
 {
     const u32 zero = 0;
-    struct self_t *self = CHECK_PTR(bpf_map_lookup_elem(&self_map, &zero));
+    struct self_t *self = CHECK_NULL(bpf_map_lookup_elem(&self_map, &zero));
 
     struct bpf_pidns_info nsdata;
     long error = bpf_get_ns_current_pid_tgid(self->dev, self->ino, &nsdata, sizeof(nsdata));
@@ -779,9 +803,9 @@ int raw_tracepoint__sys_exit(struct bpf_raw_tracepoint_args *ctx)
     CHECK_ERROR(BPF_CORE_READ_INTO(&event.syscall_nr, regs, orig_ax));
     CHECK_ERROR(BPF_CORE_READ_INTO(&event.ret,        regs, ax));
 
-    u64 *ret_map = CHECK_PTR(bpf_map_lookup_elem(event.ret < 0 ? (void*)&negative_ret_map
-                                                               : (void*)&positive_ret_map,
-                                                 &zero));
+    u64 *ret_map = CHECK_NULL(bpf_map_lookup_elem(event.ret < 0 ? (void*)&negative_ret_map
+                                                                : (void*)&positive_ret_map,
+                                                  &zero));
 
     u64 syscell_idx =      event.syscall_nr / (sizeof(u64) * 8 /* bits */);
     u64 syscell_bit = 1 << event.syscall_nr % (sizeof(u64) * 8 /* bits */);
@@ -795,7 +819,7 @@ int raw_tracepoint__sys_exit(struct bpf_raw_tracepoint_args *ctx)
 
 
         u32 zero = 0;
-        struct vm_area_event* vm_area_event = CHECK_PTR(bpf_map_lookup_elem(&vm_area_buffer, &zero));
+        struct vm_area_event* vm_area_event = CHECK_NULL(bpf_map_lookup_elem(&vm_area_buffer, &zero));
 
         vm_area_event->base.event_id = EVENT_ID(vm_area_event);
         vm_area_event->pid_tgid      = event.pid_tgid;
@@ -844,7 +868,7 @@ SEC("kprobe/do_mmap")
 int kprobe__do_mmap(struct pt_regs *ctx)
 {
     const u32 zero = 0;
-    struct self_t *self = CHECK_PTR(bpf_map_lookup_elem(&self_map, &zero));
+    struct self_t *self = CHECK_NULL(bpf_map_lookup_elem(&self_map, &zero));
 
     struct bpf_pidns_info nsdata;
     long error = bpf_get_ns_current_pid_tgid(self->dev, self->ino, &nsdata, sizeof(nsdata));
@@ -881,23 +905,11 @@ int kprobe__do_mmap(struct pt_regs *ctx)
     return 0;
 }
 
-#ifndef MAX_ERRNO
-#define MAX_ERRNO 4095
-#endif
-
-#ifndef IS_ERR_VALUE
-#define IS_ERR_VALUE(x) ((unsigned long)(void *)(x) >= (unsigned long)-MAX_ERRNO)
-#endif
-
 SEC("kretprobe/do_mmap")
 int BPF_KPROBE(kretprobe__do_mmap)
 {
-    unsigned long ret = PT_REGS_RC_CORE(ctx);
-    if (IS_ERR_VALUE(ret))
-        return 0;
-
     const u32 zero = 0;
-    struct self_t *self = CHECK_PTR(bpf_map_lookup_elem(&self_map, &zero));
+    struct self_t *self = CHECK_NULL(bpf_map_lookup_elem(&self_map, &zero));
 
     struct bpf_pidns_info nsdata;
     long error = bpf_get_ns_current_pid_tgid(self->dev, self->ino, &nsdata, sizeof(nsdata));
@@ -922,7 +934,8 @@ int BPF_KPROBE(kretprobe__do_mmap)
         .flags = argument->flags,
         .pgoff = argument->pgoff,
         .uf    = argument->uf,
-        .path  = BPF_CORE_READ(file, f_path)
+        .path  = BPF_CORE_READ(file, f_path),
+        .ret   = PT_REGS_RC_CORE(ctx)
     );
 
     // 釋放掉對應的 mmap_argument

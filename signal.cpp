@@ -607,6 +607,14 @@ public:
     }
 };
 
+#ifndef MAX_ERRNO
+#define MAX_ERRNO 4095
+#endif
+
+#ifndef IS_ERR_VALUE
+#define IS_ERR_VALUE(x) ((unsigned long)(void *)(x) >= (unsigned long)-MAX_ERRNO)
+#endif
+
 #ifndef PROT_READ
 #define PROT_READ	0x1  /* Page can be read.  */
 #endif
@@ -631,15 +639,22 @@ public:
     void operator()(int cpu, void *data, __u32 size)
     {
         auto event = static_cast<do_mmap_event*>(data);
+        if (IS_ERR_VALUE(event->ret))
+            return;
 
         // auto& areas = vm_area_map_[event->pid_tgid];
 
-        if (event->prot  == PROT_READ &&
-            event->flags == (MAP_PRIVATE | MAP_FIXED) &&
-            event->pgoff == 0)
-        {
-            // areas.clear();
-        }
+        // if (event->prot  == PROT_READ &&
+        //     event->flags == (MAP_PRIVATE | MAP_FIXED) &&
+        //     event->pgoff == 0)
+        // {
+        //     areas.clear();
+        // }
+
+        // auto [iterator, inserted] = areas.emplace(event->addr,
+        //                                           event->addr + event->len,
+        //                                           event->pgoff,
+        //                                           event->path);
 
         // std::println("    "
         //     "tgid: {}, "
@@ -716,6 +731,7 @@ public:
             auto find_path = names_map_.find(find_area->path);
             if  (find_path == std::end(names_map_))
             {
+                // 可能是 hash 發生碰撞，或是 paths[path_i & (MAX_AREA - 1)] = area->path; 超出 MAX_AREA 大小
                 std::println("warning: not find path, names_map.size(): {}",
                     std::size(names_map_));
                 continue;
@@ -774,7 +790,7 @@ class event_handler
 {
     std::array<std::function<void(int, void*, __u32)>, number> handlers_{};
 
-    void handle_event(int cpu, void *data, __u32 size) const
+    constexpr void handle_event(int cpu, void *data, __u32 size) const noexcept
     {
         auto event = static_cast<event_base*>(data);
         if (handlers_[event->event_id])
@@ -797,7 +813,7 @@ public:
         return handlers_[n];
     }
 
-    static void callback(void* ctx, int cpu, void* data, __u32 size)
+    static constexpr void callback(void* ctx, int cpu, void* data, __u32 size) noexcept
     {
         auto handler = static_cast<event_handler*>(ctx);
 
@@ -939,13 +955,13 @@ int main(int argc, char *argv[])
 
     // 建立 perf buffer 
     auto perf_buffer_ptr = std::unique_ptr<perf_buffer, decltype(&perf_buffer__free)>{
-        perf_buffer__new(bpf_map__fd(skeleton->maps.events),
-                         64,
-                         handler.callback,
-                         nullptr,
-                         &handler,
-                         &pb_opts),
-        perf_buffer__free
+         perf_buffer__new(bpf_map__fd(skeleton->maps.events),
+                          64,
+                          handler.callback,
+                          nullptr,
+                          &handler,
+                          &pb_opts),
+         perf_buffer__free
     };
 
     if (perf_buffer_ptr == nullptr)

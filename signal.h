@@ -181,6 +181,7 @@ struct do_mmap_event
     unsigned long pgoff;
     struct list_head *uf;
     struct path path;
+    unsigned long ret;
 };
 
 struct self_t
