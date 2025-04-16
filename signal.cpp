@@ -539,26 +539,26 @@ public:
             areas.emplace_hint(std::end(areas), area);
         }
 
-        // if (event->area_size != MAX_AREA)
-        // {
-        //     std::println("pid: {:>6}, tid: {:>6}, vm_area, size: {}",
-        //         event->tgid,
-        //         event->pid,
-        //         areas.size());
+        if (event->area_size != MAX_AREA)
+        {
+            std::println("pid: {:>6}, tid: {:>6}, vm_area, size: {}",
+                event->tgid,
+                event->pid,
+                areas.size());
 
-        //     for (const auto& entry : areas)
-        //     {
-        //         auto find = names_map_.find(entry.path);
+            // for (const auto& entry : areas)
+            // {
+            //     auto find = names_map_.find(entry.path);
 
-        //         std::println("    {:#014x} {:#014x} {:#010x} {:p} {:p} name: {}",
-        //         entry.vm_start,
-        //         entry.vm_end,
-        //         entry.vm_pgoff * 4096,
-        //         entry.path.dentry,
-        //         entry.path.mnt,
-        //         find == std::end(names_map_) ? std::string_view{} : find->second);
-        //     }
-        // }
+            //     std::println("    {:#014x} {:#014x} {:#010x} {:p} {:p} name: {}",
+            //     entry.vm_start,
+            //     entry.vm_end,
+            //     entry.vm_pgoff * 4096,
+            //     entry.path.dentry,
+            //     entry.path.mnt,
+            //     find == std::end(names_map_) ? std::string_view{} : find->second);
+            // }
+        }
     }
 };
 
@@ -721,23 +721,32 @@ public:
                 // addr: 0x000000f22ec4 elf: /root/.vscode-server/extensions/ms-vscode.cpptools-1.24.5-linux-x64/bin/cpptools-srv elf_off:   0xb22ec4, sym: std::__basic_file<char>::open(char const*, std::_Ios_Openmode, int), sym_addr: 0x00f22e90, sym_off: 0x00000034, file: basic_file.cc:260:16
                 // warning: not find area, start: 0x7ffd9d5e7000, end: 0x7ffd9d5e9000, addr: 0x2567646573257325
                 // 有時候會出現很大的 stack address
-                std::println("warning: not find area, start: {:#x}, end: {:#x}, addr: {:#x}",
+                std::println("warning: not find area, addr: {:#x}, start: {:#x}, end: {:#x}",
+                    key.vm_start,
                     find_area->vm_start,
-                    find_area->vm_end,
-                    key.vm_start);
+                    find_area->vm_end);
                 continue;
             }
+
+            auto elf_off = addr - find_area->vm_start + find_area->vm_pgoff * 4096;
 
             auto find_path = names_map_.find(find_area->path);
             if  (find_path == std::end(names_map_))
             {
                 // 可能是 hash 發生碰撞，或是 paths[path_i & (MAX_AREA - 1)] = area->path; 超出 MAX_AREA 大小
-                std::println("warning: not find path, names_map.size(): {}",
-                    std::size(names_map_));
+                std::println("    elf: not find path, elf_off: {:>#10x}, "
+                                 "addr: {:#x}, start: {:#x}, end: {:#x}, mnt: {:p}, dentry: {:p}, "
+                                 "names_map.size(): {}",
+                             elf_off,
+                             key.vm_start,
+                             find_area->vm_start,
+                             find_area->vm_end,
+                             find_area->path.mnt,
+                             find_area->path.dentry,
+                             std::size(names_map_));
                 continue;
             }
 
-            auto elf_off = addr - find_area->vm_start + find_area->vm_pgoff * 4096;
             std::print("    elf: {:40} elf_off: {:>#10x}",
                 find_path->second,
                 elf_off);

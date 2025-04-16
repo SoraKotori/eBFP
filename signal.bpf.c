@@ -382,6 +382,7 @@ int vm_area_tailcall(struct bpf_raw_tracepoint_args *ctx)
     struct vm_area_event    *event    = CHECK_NULL(bpf_map_lookup_elem(&vm_area_buffer, &zero));
     struct vm_area_argument *argument = CHECK_NULL(bpf_map_lookup_elem(&vm_area_map,    &zero));
     struct path             *paths    = CHECK_NULL(bpf_map_lookup_elem(&path_percpu,    &zero));
+    struct file             *file     = NULL;
 
     u32 i, path_i = argument->path_i;
     struct vm_area_struct *vma = argument->vma;
@@ -401,7 +402,7 @@ int vm_area_tailcall(struct bpf_raw_tracepoint_args *ctx)
         area->vm_start = BPF_CORE_READ(vma, vm_start);
         area->vm_end   = BPF_CORE_READ(vma, vm_end);
         area->vm_pgoff = BPF_CORE_READ(vma, vm_pgoff);
-        area->path     = BPF_CORE_READ(vma, vm_file, f_path);
+        file           = BPF_CORE_READ(vma, vm_file);
         vma            = BPF_CORE_READ(vma, vm_next);
 
         // BPF_CORE_READ_INTO(&area->vm_start, vma, vm_start);
@@ -416,10 +417,15 @@ int vm_area_tailcall(struct bpf_raw_tracepoint_args *ctx)
         // bpf_core_read(&area->path,     sizeof(area->path),     &vma->vm_file->f_path);
         // bpf_core_read(&vma,            sizeof(vma),            &vma->vm_next);
 
-        if (bpf_map_update_elem(&path_map, &area->path, &zero, BPF_NOEXIST) == 0)
+        if (file)
         {
-            paths[path_i & (MAX_AREA - 1)] = area->path;
-            path_i++;
+            area->path = BPF_CORE_READ(file, f_path);
+
+            if (bpf_map_update_elem(&path_map, &area->path, &zero, BPF_NOEXIST) == 0)
+            {
+                paths[path_i & (MAX_AREA - 1)] = area->path;
+                path_i++;
+            }
         }
     }
 
@@ -786,18 +792,22 @@ int raw_tracepoint__sys_exit(struct bpf_raw_tracepoint_args *ctx)
     else
         CHECK_ERROR(error);
 
+    struct pt_regs *regs = (struct pt_regs *)ctx->args[0];
+
     INIT_EVENT(event, sys_exit_event,
-        .pid  = nsdata.pid,
-        .tgid = nsdata.tgid
+        .pid        = nsdata.pid,
+        .tgid       = nsdata.tgid,
+        .syscall_nr = BPF_CORE_READ(regs, orig_ax),
+        .ret        = BPF_CORE_READ(regs, ax)
     );
 
     // 忽略自身的 process
     if (event.pid_tgid == self->pid_tgid)
         return 0;
 
-    struct pt_regs *regs = (struct pt_regs *)ctx->args[0];
-    CHECK_ERROR(BPF_CORE_READ_INTO(&event.syscall_nr, regs, orig_ax));
-    CHECK_ERROR(BPF_CORE_READ_INTO(&event.ret,        regs, ax));
+    // 無效的 syscall
+    if (event.syscall_nr == -1)
+        return 0;
 
     u64 *ret_map = CHECK_NULL(bpf_map_lookup_elem(event.ret < 0 ? (void *)&negative_ret_map
                                                                 : (void *)&positive_ret_map,
@@ -806,8 +816,9 @@ int raw_tracepoint__sys_exit(struct bpf_raw_tracepoint_args *ctx)
     u64 syscell_idx =      event.syscall_nr / (sizeof(u64) * 8 /* bits */);
     u64 syscell_bit = 1 << event.syscall_nr % (sizeof(u64) * 8 /* bits */);
     
-    if (syscell_idx < MAX_SYSCALL &&
-        ret_map[syscell_idx] & syscell_bit)
+    CHECK_SIZE(syscell_idx, MAX_SYSCALL - 1);
+
+    if (ret_map[syscell_idx] & syscell_bit)
     {
         CHECK_ERROR(bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU,
                                           &event, sizeof(event)));
