@@ -427,6 +427,10 @@ int vm_area_tailcall(struct bpf_raw_tracepoint_args *ctx)
                 path_i++;
             }
         }
+        else
+        {
+            area->path = (struct path){0};
+        }
     }
 
     event->area_size = i;
