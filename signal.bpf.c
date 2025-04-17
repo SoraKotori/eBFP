@@ -293,8 +293,8 @@ long output_path(void *ctx, const struct path *path)
     struct path_event *event = RETURN_NULL(bpf_map_lookup_elem(&path_buffer, &zero));
 
     event->base.event_id = EVENT_ID(path_event);
-    event->index         = RETURN_ERROR(read_path(event->name, path));
     event->path          = *path;
+    event->index         = RETURN_ERROR(read_path(event->name, path));
 
     RETURN_ERROR(bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU,
                                        event, sizeof(*event)));
@@ -311,65 +311,6 @@ long try_update_path(void *ctx, const struct path *path)
         RETURN_ERROR(output_path(ctx, path));
     else if (error != -17) // EEXIST (File exists)
         RETURN_ERROR(error);
-
-    return 0;
-}
-
-SEC("raw_tracepoint")
-int path_tailcall(struct bpf_raw_tracepoint_args *ctx)
-{
-    const u32 zero = 0;
-
-    struct vm_area_argument *argument = CHECK_NULL(bpf_map_lookup_elem(&vm_area_map, &zero));
-    struct path             *paths    = CHECK_NULL(bpf_map_lookup_elem(&path_percpu, &zero));
-
-    u32 path_i = argument->path_i;
-
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 3, 0)
-    #pragma unroll
-#endif
-    for (u32 i = 0; i < 14; i++)
-    {
-        if (path_i == 0)
-            break;
-
-        path_i = (path_i - 1) & (MAX_AREA - 1);
-        CHECK_ERROR(output_path(ctx, &paths[path_i]));
-
-        // struct path* path = bpf_map_lookup_elem(&path_percpu, &path_i);
-    }
-
-    argument->path_i = path_i;
-
-    if (path_i)
-        bpf_tail_call_static(ctx, &prog_array_map, TAIL_CALL_ONE);
-    else
-        bpf_tail_call_static(ctx, &prog_array_map, TAIL_CALL_TWO);
-
-    bpf_printk("bpf_tail_call_static error");
-    return 0;
-}
-
-SEC("raw_tracepoint")
-int stack_tailcall(struct bpf_raw_tracepoint_args *ctx)
-{
-    const u32 zero = 0;
-
-    struct stack_event   *stack_event   = CHECK_NULL(bpf_map_lookup_elem(&stack_buffer,   &zero));
-    struct vm_area_event *vm_area_event = CHECK_NULL(bpf_map_lookup_elem(&vm_area_buffer, &zero));
-
-    long size = CHECK_ERROR(bpf_get_stack(ctx,
-                                          stack_event->addrs,
-                                          sizeof(stack_event->addrs),
-                                          BPF_F_USER_STACK));
-
-    stack_event->base.event_id = EVENT_ID(stack_event);
-    stack_event->pid_tgid      = vm_area_event->pid_tgid;
-    stack_event->addr_size     = size / sizeof(*stack_event->addrs);
-
-    CHECK_ERROR(bpf_perf_event_output(
-        ctx, &events, BPF_F_CURRENT_CPU, stack_event,
-        offsetof(struct stack_event, addrs) + size));
 
     return 0;
 }
@@ -446,6 +387,65 @@ int vm_area_tailcall(struct bpf_raw_tracepoint_args *ctx)
         bpf_tail_call_static(ctx, &prog_array_map, TAIL_CALL_ONE);
 
     bpf_printk("bpf_tail_call_static error");
+    return 0;
+}
+
+SEC("raw_tracepoint")
+int path_tailcall(struct bpf_raw_tracepoint_args *ctx)
+{
+    const u32 zero = 0;
+
+    struct vm_area_argument *argument = CHECK_NULL(bpf_map_lookup_elem(&vm_area_map, &zero));
+    struct path             *paths    = CHECK_NULL(bpf_map_lookup_elem(&path_percpu, &zero));
+
+    u32 path_i = argument->path_i;
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 3, 0)
+    #pragma unroll
+#endif
+    for (u32 i = 0; i < 14; i++)
+    {
+        if (path_i == 0)
+            break;
+
+        path_i = (path_i - 1) & (MAX_AREA - 1);
+        CHECK_ERROR(output_path(ctx, &paths[path_i]));
+
+        // struct path* path = bpf_map_lookup_elem(&path_percpu, &path_i);
+    }
+
+    argument->path_i = path_i;
+
+    if (path_i)
+        bpf_tail_call_static(ctx, &prog_array_map, TAIL_CALL_ONE);
+    else
+        bpf_tail_call_static(ctx, &prog_array_map, TAIL_CALL_TWO);
+
+    bpf_printk("bpf_tail_call_static error");
+    return 0;
+}
+
+SEC("raw_tracepoint")
+int stack_tailcall(struct bpf_raw_tracepoint_args *ctx)
+{
+    const u32 zero = 0;
+
+    struct stack_event   *stack_event   = CHECK_NULL(bpf_map_lookup_elem(&stack_buffer,   &zero));
+    struct vm_area_event *vm_area_event = CHECK_NULL(bpf_map_lookup_elem(&vm_area_buffer, &zero));
+
+    long size = CHECK_ERROR(bpf_get_stack(ctx,
+                                          stack_event->addrs,
+                                          sizeof(stack_event->addrs),
+                                          BPF_F_USER_STACK));
+
+    stack_event->base.event_id = EVENT_ID(stack_event);
+    stack_event->pid_tgid      = vm_area_event->pid_tgid;
+    stack_event->addr_size     = size / sizeof(*stack_event->addrs);
+
+    CHECK_ERROR(bpf_perf_event_output(
+        ctx, &events, BPF_F_CURRENT_CPU, stack_event,
+        offsetof(struct stack_event, addrs) + size));
+
     return 0;
 }
 

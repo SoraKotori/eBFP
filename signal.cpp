@@ -541,9 +541,10 @@ public:
 
         if (event->area_size != MAX_AREA)
         {
-            std::println("pid: {:>6}, tid: {:>6}, vm_area, size: {}",
+            std::println("pid: {:>6}, tid: {:>6}, vm_area, cpu: {}, size: {}",
                 event->tgid,
                 event->pid,
+                cpu,
                 areas.size());
 
             // for (const auto& entry : areas)
@@ -599,9 +600,10 @@ public:
     {
         auto event = static_cast<sys_exit_event*>(data);
 
-        std::println("pid: {:>6}, tid: {:>6}, syscall, ret: {:>5}, number: {}", 
+        std::println("pid: {:>6}, tid: {:>6}, syscall, cpu: {}, ret: {:>5}, number: {}", 
             event->tgid,
             event->pid,
+            cpu,
             event->ret,
             event->syscall_nr);
     }
@@ -733,10 +735,15 @@ public:
             auto find_path = names_map_.find(find_area->path);
             if  (find_path == std::end(names_map_))
             {
+                // 最可能的原因是前面的 eBPF 還在執行 vm_area_tailcall 和 path_tailcall，因為遇到許多第一次的 path
+                // 而後面的 eBPF 因為前面的 eBPF 已經標記了 path，所以直接認為 path 已經存在，所以先執行完畢
+                // 而實際上要輸出時，第一次的 path 還在處理，導致找不到 path
+
                 // 可能是 hash 發生碰撞，或是 paths[path_i & (MAX_AREA - 1)] = area->path; 超出 MAX_AREA 大小
-                std::println("    elf: not find path, elf_off: {:>#10x}, "
+                std::println("    elf: not find path, cpu: {}, elf_off: {:>#10x}, "
                                  "addr: {:#x}, start: {:#x}, end: {:#x}, mnt: {:p}, dentry: {:p}, "
                                  "names_map.size(): {}",
+                             cpu,
                              elf_off,
                              key.vm_start,
                              find_area->vm_start,
