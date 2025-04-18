@@ -339,28 +339,15 @@ int vm_area_tailcall(struct bpf_raw_tracepoint_args *ctx)
             break;
 
         struct vm_area *area = &event->area[i];
-
-        area->vm_start = BPF_CORE_READ(vma, vm_start);
-        area->vm_end   = BPF_CORE_READ(vma, vm_end);
-        area->vm_pgoff = BPF_CORE_READ(vma, vm_pgoff);
-        file           = BPF_CORE_READ(vma, vm_file);
-        vma            = BPF_CORE_READ(vma, vm_next);
-
-        // BPF_CORE_READ_INTO(&area->vm_start, vma, vm_start);
-        // BPF_CORE_READ_INTO(&area->vm_end,   vma, vm_end);
-        // BPF_CORE_READ_INTO(&area->vm_pgoff, vma, vm_pgoff);
-        // BPF_CORE_READ_INTO(&area->path,     vma, vm_file, f_path);
-        // BPF_CORE_READ_INTO(&vma,            vma, vm_next);
-
-        // bpf_core_read(&area->vm_start, sizeof(area->vm_start), &vma->vm_start);
-        // bpf_core_read(&area->vm_end,   sizeof(area->vm_end),   &vma->vm_end);
-        // bpf_core_read(&area->vm_pgoff, sizeof(area->vm_pgoff), &vma->vm_pgoff);
-        // bpf_core_read(&area->path,     sizeof(area->path),     &vma->vm_file->f_path);
-        // bpf_core_read(&vma,            sizeof(vma),            &vma->vm_next);
+        bpf_core_read(&area->vm_start, sizeof(area->vm_start), &vma->vm_start);
+        bpf_core_read(&area->vm_end,   sizeof(area->vm_end),   &vma->vm_end);
+        bpf_core_read(&area->vm_pgoff, sizeof(area->vm_pgoff), &vma->vm_pgoff);
+        bpf_core_read(&file,           sizeof(file),           &vma->vm_file);
+        bpf_core_read(&vma,            sizeof(vma),            &vma->vm_next);
 
         if (file)
         {
-            area->path = BPF_CORE_READ(file, f_path);
+            bpf_core_read(&area->path, sizeof(area->path), &file->f_path);
 
             if (bpf_map_update_elem(&path_map, &area->path, &zero, BPF_NOEXIST) == 0)
             {
@@ -375,11 +362,12 @@ int vm_area_tailcall(struct bpf_raw_tracepoint_args *ctx)
     }
 
     event->area_size = i;
-    CHECK_ERROR(bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU,
-                                      event, offsetof(struct vm_area_event, area[i])));    
+    CHECK_ERROR(bpf_perf_event_output(
+        ctx, &events, BPF_F_CURRENT_CPU, event,
+        offsetof(struct vm_area_event, area[i])));    
 
     argument->path_i = path_i;
-    argument->vma = vma;
+    argument->vma    = vma;
 
     if (i == MAX_AREA)
         bpf_tail_call_static(ctx, &prog_array_map, TAIL_CALL_ZERO);
@@ -407,6 +395,8 @@ int path_tailcall(struct bpf_raw_tracepoint_args *ctx)
     {
         if (path_i == 0)
             break;
+
+        // struct path* path = bpf_map_lookup_elem(&path_percpu, &path_i);
 
         path_i = (path_i - 1) & (MAX_AREA - 1);
         CHECK_ERROR(output_path(ctx, &paths[path_i]));

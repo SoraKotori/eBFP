@@ -752,6 +752,24 @@ public:
             auto find_path = names_map_.find(find_area->path);
             if  (find_path == std::end(names_map_))
             {
+                // pid:    316, tid:    327, syscall, cpu: 6, ret:    -2, number: 257
+                // pid:    316, tid:    328, syscall, cpu: 4, ret:    -2, number: 257
+                // pid:    316, tid:    326, syscall, cpu: 10, ret:    -2, number: 257
+                // pid:    316, tid:    328, vm_area, cpu: 4, size: 1942
+                //     elf: /usr/lib/x86_64-linux-gnu/libc.so.6      elf_off:    0xab6e2, sym: __syscall_cancel_arch, sym_addr: 0x000ab6b0, sym_off: 0x00000032, file: syscall_cancel.S:56:0
+                //     elf: /usr/lib/x86_64-linux-gnu/libc.so.6      elf_off:   0x126213, sym: __libc_open64, sym_addr: 0x001261c0, sym_off: 0x00000053, file: open64.c:43:1
+                //     elf: not find path, value: 1, cpu: 4, elf_off:  0x14c78dc, addr: 0x18c78dc, start: 0xb82000, end: 0x2640000, mnt: 0xffff9e3ce4de3920, dentry: 0xffff9e3d38c61600, names_map.size(): 24
+                //     elf: not find path, value: 1, cpu: 4, elf_off:  0x14bf050, addr: 0x18bf050, start: 0xb82000, end: 0x2640000, mnt: 0xffff9e3ce4de3920, dentry: 0xffff9e3d38c61600, names_map.size(): 24
+                //     elf: /usr/lib/x86_64-linux-gnu/libc.so.6      elf_off:    0xa2ef1, sym: start_thread, sym_addr: 0x000a2c20, sym_off: 0x000002d1, file: pthread_create.c:448:8
+                //     elf: /usr/lib/x86_64-linux-gnu/libc.so.6      elf_off:   0x134244, sym: clone, sym_addr: 0x00134200, sym_off: 0x00000044, file: clone.S:102:0
+                // pid:    316, tid:    327, vm_area, cpu: 6, size: 1942
+                //     elf: /usr/lib/x86_64-linux-gnu/libc.so.6      elf_off:    0xab6e2, sym: __syscall_cancel_arch, sym_addr: 0x000ab6b0, sym_off: 0x00000032, file: syscall_cancel.S:56:0
+                //     elf: /usr/lib/x86_64-linux-gnu/libc.so.6      elf_off:   0x126213, sym: __libc_open64, sym_addr: 0x001261c0, sym_off: 0x00000053, file: open64.c:43:1
+                //     elf: /vscode/vscode-server/bin/linux-x64/4949701c880d4bdb949e3c0e6b400288da7f474b/node elf_off:  0x14c78dc, sym: uv__fs_work, sym_addr: 0x00000000, sym_off: 0x018c78dc, file: fs.c:386:10
+                //     elf: /vscode/vscode-server/bin/linux-x64/4949701c880d4bdb949e3c0e6b400288da7f474b/node elf_off:  0x14bf050, sym: worker, sym_addr: 0x018befd0, sym_off: 0x00000080, file: threadpool.c:124:5
+                //     elf: /usr/lib/x86_64-linux-gnu/libc.so.6      elf_off:    0xa2ef1, sym: start_thread, sym_addr: 0x000a2c20, sym_off: 0x000002d1, file: pthread_create.c:448:8
+                //     elf: /usr/lib/x86_64-linux-gnu/libc.so.6      elf_off:   0x134244, sym: clone, sym_addr: 0x00134200, sym_off: 0x00000044, file: clone.S:102:0
+
                 // 最可能的原因是前面的 eBPF 還在執行 vm_area_tailcall 和 path_tailcall，因為遇到許多第一次的 path
                 // 而後面的 eBPF 因為前面的 eBPF 已經標記了 path，所以直接認為 path 已經存在，所以先執行完畢
                 // 而實際上要輸出時，第一次的 path 還在處理，導致找不到 path
