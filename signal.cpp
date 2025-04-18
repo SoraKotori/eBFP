@@ -22,6 +22,8 @@ struct path
 {
 	void *mnt;
 	void *dentry;
+
+    bool operator==(const path&) const = default;
 };
 
 struct path_hash
@@ -685,16 +687,19 @@ class stack_handler
     blaze_symbolizer* symbolizer_;
     const std::unordered_map<__u64, std::set<vm_area_event::vm_area, vm_area_comp>>& vm_area_map_;
     const std::unordered_map<path,  std::string, path_hash, path_equal>& names_map_;
+    bpf_map *path_map_;
 
 public:
     stack_handler(blaze_normalizer* normalizer,
                   blaze_symbolizer* symbolizer,
                   decltype(vm_area_map_) vm_area_map,
-                  decltype(names_map_) names_map) :
+                  decltype(names_map_) names_map,
+                  bpf_map *path_map) :
         normalizer_{normalizer},
         symbolizer_{symbolizer},
         vm_area_map_{vm_area_map},
-        names_map_{names_map}
+        names_map_{names_map},
+        path_map_{path_map}
     {}
 
     void operator()(int cpu, void *data, __u32 size)
@@ -732,20 +737,41 @@ public:
 
             auto elf_off = addr - find_area->vm_start + find_area->vm_pgoff * 4096;
 
+            if (find_area->path == path{})
+            {
+                std::println("    elf: anonymous mapping, "
+                             "elf_off: {:>#10x}, "
+                             "addr: {:#x}, start: {:#x}, end: {:#x}",
+                             elf_off,
+                             addr,
+                             find_area->vm_start,
+                             find_area->vm_end);
+                continue;
+            }
+
             auto find_path = names_map_.find(find_area->path);
             if  (find_path == std::end(names_map_))
             {
                 // 最可能的原因是前面的 eBPF 還在執行 vm_area_tailcall 和 path_tailcall，因為遇到許多第一次的 path
                 // 而後面的 eBPF 因為前面的 eBPF 已經標記了 path，所以直接認為 path 已經存在，所以先執行完畢
                 // 而實際上要輸出時，第一次的 path 還在處理，導致找不到 path
+                __u32 value = 0;
+                if (auto error = bpf_map__lookup_elem(path_map_,
+                                                      &find_area->path, sizeof(find_area->path),
+                                                      &value, sizeof(value), 0))
+                {
+                    std::println("    elf: error: {}", -error);
+                    continue;
+                }
 
-                // 可能是 hash 發生碰撞，或是 paths[path_i & (MAX_AREA - 1)] = area->path; 超出 MAX_AREA 大小
-                std::println("    elf: not find path, cpu: {}, elf_off: {:>#10x}, "
-                                 "addr: {:#x}, start: {:#x}, end: {:#x}, mnt: {:p}, dentry: {:p}, "
-                                 "names_map.size(): {}",
+                std::println("    elf: not find path, value: {}, "
+                             "cpu: {}, elf_off: {:>#10x}, "
+                             "addr: {:#x}, start: {:#x}, end: {:#x}, mnt: {:p}, dentry: {:p}, "
+                             "names_map.size(): {}",
+                             value,
                              cpu,
                              elf_off,
-                             key.vm_start,
+                             addr,
                              find_area->vm_start,
                              find_area->vm_end,
                              find_area->path.mnt,
@@ -960,7 +986,7 @@ int main(int argc, char *argv[])
     handler[EVENT_ID(sys_exit_read_event)]      = sys_exit_read_handler{read_map, names_map};
     handler[EVENT_ID(path_event)]               = path_handler{names_map, skeleton->maps.path_map};
     handler[EVENT_ID(vm_area_event)]            = vm_area_handler{vm_area_map, names_map};
-    handler[EVENT_ID(stack_event)]              = stack_handler{normalizer.get(), symbolizer.get(), vm_area_map, names_map};
+    handler[EVENT_ID(stack_event)]              = stack_handler{normalizer.get(), symbolizer.get(), vm_area_map, names_map, skeleton->maps.path_map};
     handler[EVENT_ID(sched_process_exit_event)] = handle_sched_process_exit;
     handler[EVENT_ID(do_coredump_event)]        = do_coredump_handler{};
     handler[EVENT_ID(sys_exit_event)]           = sys_exit_handler{};
