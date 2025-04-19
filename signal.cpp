@@ -1,3 +1,5 @@
+#include <fcntl.h>   // open
+#include <unistd.h>  // dup2, close
 #include <csignal>
 
 #include <iostream>
@@ -475,8 +477,9 @@ class path_handler
     bpf_map *path_map_;
 
 public:
-    path_handler(decltype(names_map_) map, decltype(path_map_) path_map) :
-        names_map_{map},
+    path_handler(decltype(names_map_) names_map,
+                 decltype(path_map_)  path_map) :
+        names_map_{names_map},
         path_map_{path_map}
     {}
 
@@ -494,7 +497,14 @@ public:
             event->name + MAX_ARG_LEN - MAX_NAME_LEN};
 
         auto [iterator, inserted] = names_map_.try_emplace(event->path, new_name);
-        if   (inserted == false)
+        if (inserted)
+        {
+            std::println("    path: {}, mnt: {:p}, dentry: {:p}",
+                         new_name,
+                         event->path.mnt,
+                         event->path.dentry);
+        }
+        else
         {
             std::println("warning: names_map_.try_emplace.inserted == false\n"
                          "    old_path: {}\n"
@@ -940,6 +950,11 @@ public:
         // 呼叫實際的 member function
         handler->handle_event(cpu, data, size);
     }
+
+    static constexpr void lost(void *ctx, int cpu, __u64 cnt) noexcept
+    {
+        std::println("warning: lost event, cpu: {}, cnt: {}", cpu, cnt);
+    }
 };
 
 template<typename Container, typename size_type = Container::size_type>
@@ -952,8 +967,29 @@ auto set_ret(Container& container, size_type bit)
 
 int main(int argc, char *argv[])
 {
-    if (SIG_ERR == std::signal(SIGINT,  signal_handler)) return EXIT_FAILURE;
-    if (SIG_ERR == std::signal(SIGTERM, signal_handler)) return EXIT_FAILURE;
+    bool redirect = argc > 1;
+    if  (redirect)
+    {
+        // 開啟要寫入的檔案（O_WRONLY 為寫入模式，O_CREAT 如果檔案不存在就建立它，O_TRUNC 為清空檔案內容
+        int fd = open(argv[1], O_WRONLY | O_CREAT | O_TRUNC, 0666);
+        if (fd < 0)
+            throw std::system_error{errno, std::system_category()};
+
+        if (dup3(fd, STDOUT_FILENO, 0) < 0)
+            throw std::system_error{errno, std::system_category()};
+
+        if (dup3(fd, STDERR_FILENO, 0) < 0)
+            throw std::system_error{errno, std::system_category()};
+
+        if (close(fd) < 0)
+            throw std::system_error{errno, std::system_category()};
+    }
+
+    if (SIG_ERR == std::signal(SIGINT,  signal_handler))
+        throw std::system_error{errno, std::system_category()};
+
+    if (SIG_ERR == std::signal(SIGTERM, signal_handler))
+        throw std::system_error{errno, std::system_category()};
 
     // open and load eBPF skeleton
     auto skeleton = std::unique_ptr<signal_bpf,        decltype(&signal_bpf::destroy)>{
@@ -1028,10 +1064,7 @@ int main(int argc, char *argv[])
         blaze_symbolizer_new_opts(&symbolizer_opts),
         blaze_symbolizer_free};
     if (!symbolizer)
-    {
-        std::println("blaze_symbolizer_new_opts: {}", blaze_err_str(blaze_err_last()));
-        return EXIT_FAILURE;
-    }
+        throw std::runtime_error(blaze_err_str(blaze_err_last()));
 
     blaze_normalizer_opts normalizer_opts =
     {
@@ -1044,10 +1077,7 @@ int main(int argc, char *argv[])
         blaze_normalizer_new_opts(&normalizer_opts),
         blaze_normalizer_free};
     if (!normalizer)
-    {
-        std::println("blaze_normalizer_new_opts: {}", blaze_err_str(blaze_err_last()));
-        return EXIT_FAILURE;
-    }
+        throw std::runtime_error(blaze_err_str(blaze_err_last()));
 
     std::unordered_map<__u64, execve_argument> execve_map;
     std::unordered_map<__u64, kill_argument> kill_map;
@@ -1078,28 +1108,20 @@ int main(int argc, char *argv[])
          perf_buffer__new(bpf_map__fd(skeleton->maps.events),
                           512,
                           handler.callback,
-                          nullptr,
+                          handler.lost,
                           &handler,
                           &pb_opts),
-         perf_buffer__free
-    };
-
-    if (perf_buffer_ptr == nullptr)
+         perf_buffer__free};
+    if (!perf_buffer_ptr)
         throw std::system_error{-errno, std::system_category(), "Failed to create perf buffer"};
 
-    bool disable_read = true;
-    if  (disable_read)
-    {
-        bpf_program__set_autoattach(skeleton->progs.tracepoint__syscalls__sys_enter_read, false);
-        bpf_program__set_autoattach(skeleton->progs.tracepoint__syscalls__sys_exit_read, false);
-    }
+    bool attach_read = false;
+    bpf_program__set_autoattach(skeleton->progs.tracepoint__syscalls__sys_enter_read, attach_read);
+    bpf_program__set_autoattach(skeleton->progs.tracepoint__syscalls__sys_exit_read,  attach_read);
 
-    bool disable_mmap = true;
-    if  (disable_mmap)
-    {
-        bpf_program__set_autoattach(skeleton->progs.kprobe__do_mmap, false);
-        bpf_program__set_autoattach(skeleton->progs.kretprobe__do_mmap, false);
-    }
+    bool attach_mmap = false;
+    bpf_program__set_autoattach(skeleton->progs.kprobe__do_mmap,    attach_mmap);
+    bpf_program__set_autoattach(skeleton->progs.kretprobe__do_mmap, attach_mmap);
 
     // attach eBPF 程式到對應的 tracepoint
     if ((error = signal_bpf::attach(skeleton.get())) < 0)
