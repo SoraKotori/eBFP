@@ -84,7 +84,7 @@ struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, MAX_ENTRIES);
     __type(key, struct path);
-    __type(value, u32);
+    __type(value, u64);
 } path_map SEC(".maps");
 
 struct {
@@ -296,6 +296,9 @@ long output_path(void *ctx, const struct path *path)
     event->path          = *path;
     event->index         = RETURN_ERROR(read_path(event->name, path));
 
+    const u64 ktime = bpf_ktime_get_ns();
+    RETURN_ERROR(bpf_map_update_elem(&path_map, path, &ktime, BPF_EXIST));
+
     RETURN_ERROR(bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU,
                                        event, sizeof(*event)));
     return 0;
@@ -304,15 +307,11 @@ long output_path(void *ctx, const struct path *path)
 static __always_inline
 long try_update_path(void *ctx, const struct path *path)
 {
-    const u32 zero = 0;
-    const u32 one  = 1;
+    const u64 ktime = 0;
 
-    long error = bpf_map_update_elem(&path_map, path, &zero, BPF_NOEXIST);
+    long error = bpf_map_update_elem(&path_map, path, &ktime, BPF_NOEXIST);
     if  (error == 0)
-    {
         RETURN_ERROR(output_path(ctx, path));
-        RETURN_ERROR(bpf_map_update_elem(&path_map, path, &one, BPF_EXIST));
-    }
     else if (error != -17) // EEXIST (File exists)
         RETURN_ERROR(error);
 
@@ -323,6 +322,7 @@ SEC("raw_tracepoint")
 int vm_area_tailcall(struct bpf_raw_tracepoint_args *ctx)
 {
     const u32 zero = 0;
+    const u64 ktime = 0;
 
     struct vm_area_event    *event    = CHECK_NULL(bpf_map_lookup_elem(&vm_area_buffer, &zero));
     struct vm_area_argument *argument = CHECK_NULL(bpf_map_lookup_elem(&vm_area_map,    &zero));
@@ -353,7 +353,7 @@ int vm_area_tailcall(struct bpf_raw_tracepoint_args *ctx)
         {
             bpf_core_read(&area->path, sizeof(area->path), &file->f_path);
 
-            if (bpf_map_update_elem(&path_map, &area->path, &zero, BPF_NOEXIST) == 0)
+            if (bpf_map_update_elem(&path_map, &area->path, &ktime, BPF_NOEXIST) == 0)
             {
                 paths[path_i & (MAX_AREA - 1)] = area->path;
                 path_i++;
@@ -386,7 +386,6 @@ SEC("raw_tracepoint")
 int path_tailcall(struct bpf_raw_tracepoint_args *ctx)
 {
     const u32 zero = 0;
-    const u32 one  = 1;
 
     struct vm_area_argument *argument = CHECK_NULL(bpf_map_lookup_elem(&vm_area_map, &zero));
     struct path             *paths    = CHECK_NULL(bpf_map_lookup_elem(&path_percpu, &zero));
@@ -405,7 +404,6 @@ int path_tailcall(struct bpf_raw_tracepoint_args *ctx)
 
         path_i = (path_i - 1) & (MAX_AREA - 1);
         CHECK_ERROR(output_path(ctx, &paths[path_i]));
-        CHECK_ERROR(bpf_map_update_elem(&path_map, &paths[path_i], &one, BPF_EXIST));
     }
 
     argument->path_i = path_i;
@@ -434,6 +432,7 @@ int stack_tailcall(struct bpf_raw_tracepoint_args *ctx)
 
     stack_event->base.event_id = EVENT_ID(stack_event);
     stack_event->pid_tgid      = vm_area_event->pid_tgid;
+    stack_event->ktime         = bpf_ktime_get_ns();
     stack_event->addr_size     = size / sizeof(*stack_event->addrs);
 
     CHECK_ERROR(bpf_perf_event_output(

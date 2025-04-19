@@ -752,6 +752,11 @@ public:
             auto find_path = names_map_.find(find_area->path);
             if  (find_path == std::end(names_map_))
             {
+                // 因為前面的 eBPF 還在執行 vm_area_tailcall 和 path_tailcall，因為遇到許多第一次的 path
+                // 而後面的 eBPF 因為前面的 eBPF 已經標記了 path，所以直接認為 path 已經存在，所以先執行完畢
+                // 而實際上要輸出時，第一次的 path 還在處理，導致找不到 path
+
+                // example 1:
                 // pid:    316, tid:    327, syscall, cpu: 6, ret:    -2, number: 257
                 // pid:    316, tid:    328, syscall, cpu: 4, ret:    -2, number: 257
                 // pid:    316, tid:    326, syscall, cpu: 10, ret:    -2, number: 257
@@ -770,23 +775,72 @@ public:
                 //     elf: /usr/lib/x86_64-linux-gnu/libc.so.6      elf_off:    0xa2ef1, sym: start_thread, sym_addr: 0x000a2c20, sym_off: 0x000002d1, file: pthread_create.c:448:8
                 //     elf: /usr/lib/x86_64-linux-gnu/libc.so.6      elf_off:   0x134244, sym: clone, sym_addr: 0x00134200, sym_off: 0x00000044, file: clone.S:102:0
 
-                // 最可能的原因是前面的 eBPF 還在執行 vm_area_tailcall 和 path_tailcall，因為遇到許多第一次的 path
-                // 而後面的 eBPF 因為前面的 eBPF 已經標記了 path，所以直接認為 path 已經存在，所以先執行完畢
-                // 而實際上要輸出時，第一次的 path 還在處理，導致找不到 path
-                __u32 value = 0;
+                // example 2:
+                // pid: 935791, tid: 935800, syscall, cpu: 16, ret:    -2, number: 257
+                // pid: 935791, tid: 935800, vm_area, cpu: 16, size: 1920
+                // pid: 935791, tid: 935798, syscall, cpu: 10, ret:    -2, number: 257
+                // pid: 935791, tid: 935798, vm_area, cpu: 10, size: 1920
+                //     elf: not find path, event ktime: 396536262259789, path ktime: 396536262051114, cpu: 10, elf_off:    0xab6e2, addr: 0x7f5eefc196e2, start: 0x7f5eefb96000, end: 0x7f5eefd2c000, mnt: 0xffff9889c4486aa0, dentry: 0xffff9889cde15380, names_map.size(): 2
+                //     elf: not find path, event ktime: 396536262259789, path ktime: 396536262051114, cpu: 10, elf_off:   0x126213, addr: 0x7f5eefc94213, start: 0x7f5eefb96000, end: 0x7f5eefd2c000, mnt: 0xffff9889c4486aa0, dentry: 0xffff9889cde15380, names_map.size(): 2
+                //     elf: not find path, event ktime: 396536262259789, path ktime: 396536262295058, cpu: 10, elf_off:  0x14c78dc, addr: 0x18c78dc, start: 0xb82000, end: 0x2640000, mnt: 0xffff9889c44857e0, dentry: 0xffff9889c1e73800, names_map.size(): 2
+                //     elf: not find path, event ktime: 396536262259789, path ktime: 396536262295058, cpu: 10, elf_off:  0x14bf050, addr: 0x18bf050, start: 0xb82000, end: 0x2640000, mnt: 0xffff9889c44857e0, dentry: 0xffff9889c1e73800, names_map.size(): 2
+                //     elf: not find path, event ktime: 396536262259789, path ktime: 396536262051114, cpu: 10, elf_off:    0xa2ef1, addr: 0x7f5eefc10ef1, start: 0x7f5eefb96000, end: 0x7f5eefd2c000, mnt: 0xffff9889c4486aa0, dentry: 0xffff9889cde15380, names_map.size(): 2
+                //     elf: not find path, event ktime: 396536262259789, path ktime: 396536262051114, cpu: 10, elf_off:   0x134244, addr: 0x7f5eefca2244, start: 0x7f5eefb96000, end: 0x7f5eefd2c000, mnt: 0xffff9889c4486aa0, dentry: 0xffff9889cde15380, names_map.size(): 2
+                // pid: 935791, tid: 935799, syscall, cpu: 0, ret:    -2, number: 257
+                // pid: 935791, tid: 935799, vm_area, cpu: 0, size: 1920
+                //     elf: not find path, event ktime: 396536262316622, path ktime: 396536262051114, cpu: 0, elf_off:    0xab6e2, addr: 0x7f5eefc196e2, start: 0x7f5eefb96000, end: 0x7f5eefd2c000, mnt: 0xffff9889c4486aa0, dentry: 0xffff9889cde15380, names_map.size(): 2
+                //     elf: not find path, event ktime: 396536262316622, path ktime: 396536262051114, cpu: 0, elf_off:   0x126213, addr: 0x7f5eefc94213, start: 0x7f5eefb96000, end: 0x7f5eefd2c000, mnt: 0xffff9889c4486aa0, dentry: 0xffff9889cde15380, names_map.size(): 2
+                //     elf: not find path, event ktime: 396536262316622, path ktime: 396536262295058, cpu: 0, elf_off:  0x14c78dc, addr: 0x18c78dc, start: 0xb82000, end: 0x2640000, mnt: 0xffff9889c44857e0, dentry: 0xffff9889c1e73800, names_map.size(): 2
+                //     elf: not find path, event ktime: 396536262316622, path ktime: 396536262295058, cpu: 0, elf_off:  0x14bf050, addr: 0x18bf050, start: 0xb82000, end: 0x2640000, mnt: 0xffff9889c44857e0, dentry: 0xffff9889c1e73800, names_map.size(): 2
+                //     elf: not find path, event ktime: 396536262316622, path ktime: 396536262051114, cpu: 0, elf_off:    0xa2ef1, addr: 0x7f5eefc10ef1, start: 0x7f5eefb96000, end: 0x7f5eefd2c000, mnt: 0xffff9889c4486aa0, dentry: 0xffff9889cde15380, names_map.size(): 2
+                //     elf: not find path, event ktime: 396536262316622, path ktime: 396536262051114, cpu: 0, elf_off:   0x134244, addr: 0x7f5eefca2244, start: 0x7f5eefb96000, end: 0x7f5eefd2c000, mnt: 0xffff9889c4486aa0, dentry: 0xffff9889cde15380, names_map.size(): 2
+                // pid: 1130009, tid: 1130009, execve,  ret:     0, command: /bin/sh -c /usr/bin/ps -ax -o pid=,ppid=,pcpu=,pmem=,command= 
+                // pid: 1130009, tid: 1130009, exited,  ret:     0
+                // pid: 1130027, tid: 1130027, execve,  ret:     0, command: cat /proc/1120092/stat 
+                // pid: 1130027, tid: 1130027, exited,  ret:     0
+                //     elf: /usr/lib/x86_64-linux-gnu/libc.so.6      elf_off:    0xab6e2, sym: __syscall_cancel_arch, sym_addr: 0x000ab6b0, sym_off: 0x00000032, file: syscall_cancel.S:56:0
+                //     elf: /usr/lib/x86_64-linux-gnu/libc.so.6      elf_off:   0x126213, sym: __libc_open64, sym_addr: 0x001261c0, sym_off: 0x00000053, file: open64.c:43:1
+                //     elf: /vscode/vscode-server/bin/linux-x64/4949701c880d4bdb949e3c0e6b400288da7f474b/node elf_off:  0x14c78dc, sym: uv__fs_work, sym_addr: 0x00000000, sym_off: 0x018c78dc, file: fs.c:386:10
+                //     elf: /vscode/vscode-server/bin/linux-x64/4949701c880d4bdb949e3c0e6b400288da7f474b/node elf_off:  0x14bf050, sym: worker, sym_addr: 0x018befd0, sym_off: 0x00000080, file: threadpool.c:124:5
+                //     elf: /usr/lib/x86_64-linux-gnu/libc.so.6      elf_off:    0xa2ef1, sym: start_thread, sym_addr: 0x000a2c20, sym_off: 0x000002d1, file: pthread_create.c:448:8
+                //     elf: /usr/lib/x86_64-linux-gnu/libc.so.6      elf_off:   0x134244, sym: clone, sym_addr: 0x00134200, sym_off: 0x00000044, file: clone.S:102:0
+
+                // example 3:
+                // pid: 935791, tid: 935801, syscall, cpu: 30, ret:    -2, number: 257
+                // pid: 935791, tid: 935798, syscall, cpu: 21, ret:    -2, number: 257
+                // pid: 935791, tid: 935798, vm_area, cpu: 21, size: 1989
+                // pid: 935791, tid: 935800, syscall, cpu: 31, ret:    -2, number: 257
+                // pid: 935791, tid: 935800, vm_area, cpu: 31, size: 1989
+                //     elf: /usr/lib/x86_64-linux-gnu/libc.so.6      elf_off:    0xab6e2, sym: __syscall_cancel_arch, sym_addr: 0x000ab6b0, sym_off: 0x00000032, file: syscall_cancel.S:56:0
+                //     elf: /usr/lib/x86_64-linux-gnu/libc.so.6      elf_off:   0x126213, sym: __libc_open64, sym_addr: 0x001261c0, sym_off: 0x00000053, file: open64.c:43:1
+                //     elf: not find path, diff ktime: 18446744073709535299, cpu: 31, elf_off:  0x14c78dc, addr: 0x18c78dc, start: 0xb82000, end: 0x2640000, mnt: 0xffff9889c44857e0, dentry: 0xffff9889c1e73800, names_map.size(): 22
+                //     elf: not find path, diff ktime: 18446744073709535299, cpu: 31, elf_off:  0x14bf050, addr: 0x18bf050, start: 0xb82000, end: 0x2640000, mnt: 0xffff9889c44857e0, dentry: 0xffff9889c1e73800, names_map.size(): 22
+                //     elf: /usr/lib/x86_64-linux-gnu/libc.so.6      elf_off:    0xa2ef1, sym: start_thread, sym_addr: 0x000a2c20, sym_off: 0x000002d1, file: pthread_create.c:448:8
+                //     elf: /usr/lib/x86_64-linux-gnu/libc.so.6      elf_off:   0x134244, sym: clone, sym_addr: 0x00134200, sym_off: 0x00000044, file: clone.S:102:0
+                // pid: 935791, tid: 935801, vm_area, cpu: 30, size: 1989
+                //     elf: /usr/lib/x86_64-linux-gnu/libc.so.6      elf_off:    0xab6e2, sym: __syscall_cancel_arch, sym_addr: 0x000ab6b0, sym_off: 0x00000032, file: syscall_cancel.S:56:0
+                //     elf: /usr/lib/x86_64-linux-gnu/libc.so.6      elf_off:   0x126213, sym: __libc_open64, sym_addr: 0x001261c0, sym_off: 0x00000053, file: open64.c:43:1
+                //     elf: /vscode/vscode-server/bin/linux-x64/4949701c880d4bdb949e3c0e6b400288da7f474b/node elf_off:  0x14c78dc, sym: uv__fs_work, sym_addr: 0x00000000, sym_off: 0x018c78dc, file: fs.c:386:10
+                //     elf: /vscode/vscode-server/bin/linux-x64/4949701c880d4bdb949e3c0e6b400288da7f474b/node elf_off:  0x14bf050, sym: worker, sym_addr: 0x018befd0, sym_off: 0x00000080, file: threadpool.c:124:5
+                //     elf: /usr/lib/x86_64-linux-gnu/libc.so.6      elf_off:    0xa2ef1, sym: start_thread, sym_addr: 0x000a2c20, sym_off: 0x000002d1, file: pthread_create.c:448:8
+                //     elf: /usr/lib/x86_64-linux-gnu/libc.so.6      elf_off:   0x134244, sym: clone, sym_addr: 0x00134200, sym_off: 0x00000044, file: clone.S:102:0
+
+                __u64 path_ktime = 0;
                 if (auto error = bpf_map__lookup_elem(path_map_,
                                                       &find_area->path, sizeof(find_area->path),
-                                                      &value, sizeof(value), 0))
+                                                      &path_ktime, sizeof(path_ktime), 0))
                 {
                     std::println("    elf: error: {}", -error);
                     continue;
                 }
 
-                std::println("    elf: not find path, value: {}, "
+                std::println("    elf: not find path, "
+                             "path ktime: {}, diff ktime: {}ns, "
                              "cpu: {}, elf_off: {:>#10x}, "
                              "addr: {:#x}, start: {:#x}, end: {:#x}, mnt: {:p}, dentry: {:p}, "
                              "names_map.size(): {}",
-                             value,
+                             path_ktime,
+                             static_cast<__s64>(event->ktime - path_ktime),
                              cpu,
                              elf_off,
                              addr,
@@ -795,6 +849,12 @@ public:
                              find_area->path.mnt,
                              find_area->path.dentry,
                              std::size(names_map_));
+
+                // if (ktime < event->ktime)
+                // {
+                //     bpf_map__delete_elem(path_map_, &find_area->path, sizeof(find_area->path), 0);
+                // }
+
                 continue;
             }
 
@@ -1016,7 +1076,7 @@ int main(int argc, char *argv[])
     // 建立 perf buffer 
     auto perf_buffer_ptr = std::unique_ptr<perf_buffer, decltype(&perf_buffer__free)>{
          perf_buffer__new(bpf_map__fd(skeleton->maps.events),
-                          64,
+                          512,
                           handler.callback,
                           nullptr,
                           &handler,

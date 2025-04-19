@@ -138,6 +138,7 @@ struct stack_event
     struct event_base base;
 
     PID_TGID_UNION;
+    __u64 ktime;
     __u32 addr_size;
     unsigned long addrs[PERF_MAX_STACK_DEPTH];
 };
