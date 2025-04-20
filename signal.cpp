@@ -504,10 +504,10 @@ public:
             }
             else
             {
-                std::println("    path: {}, diff ktime: {}ns, ktime: {}, mnt: {:p}, dentry: {:p}",
+                std::println("    cpu: {}, path: {}, ktime: {}, mnt: {:p}, dentry: {:p}",
+                             cpu,
                              iterator->second,
                              tp.tv_sec * 1'000'000'000 + tp.tv_nsec - event->ktime,
-                             event->ktime,
                              event->path.mnt,
                              event->path.dentry);
             }
@@ -779,31 +779,24 @@ public:
                                                       &find_area->path, sizeof(find_area->path),
                                                       &path_ktime, sizeof(path_ktime), 0))
                 {
-                    std::println("    elf: error: {}", -error);
+                    std::system_error system_error{-error, std::system_category()};
+                    std::println("    elf: bpf_map__lookup_elem failed, code: {}, what: {}",
+                                 system_error.code().value(),
+                                 system_error.what());
                     continue;
                 }
 
-                std::println("    elf: not find path, "
-                             "path ktime: {}, diff ktime: {}ns, "
-                             "cpu: {}, elf_off: {:>#10x}, "
-                             "addr: {:#x}, start: {:#x}, end: {:#x}, mnt: {:p}, dentry: {:p}, "
-                             "names_map.size(): {}",
-                             path_ktime,
-                             static_cast<__s64>(event->ktime - path_ktime),
-                             cpu,
+                std::println("    elf: not find path, elf_off: {:>#10x}, "
+                             "cpu: {}, ktime: {}, "
+                             "addr: {:#x}, start: {:#x}, end: {:#x}, mnt: {:p}, dentry: {:p}",
                              elf_off,
+                             cpu,
+                             static_cast<__s64>(event->ktime - path_ktime),
                              addr,
                              find_area->vm_start,
                              find_area->vm_end,
                              find_area->path.mnt,
-                             find_area->path.dentry,
-                             std::size(names_map_));
-
-                // if (ktime < event->ktime)
-                // {
-                //     bpf_map__delete_elem(path_map_, &find_area->path, sizeof(find_area->path), 0);
-                // }
-
+                             find_area->path.dentry);
                 continue;
             }
 
