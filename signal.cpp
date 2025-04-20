@@ -1,5 +1,5 @@
-#include <fcntl.h>   // open
-#include <unistd.h>  // dup2, close
+#include <fcntl.h>
+#include <unistd.h>
 #include <csignal>
 
 #include <iostream>
@@ -16,6 +16,7 @@
 
 #include <sys/wait.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 
 #include <bpf/libbpf.h>
 #include <blazesym.h>
@@ -264,7 +265,6 @@ struct execve_argument
 {
     std::size_t argc = 0;
     std::vector<std::string> argv;
-    int ret = 0;
 };
 
 class sys_enter_execve_handler
@@ -288,7 +288,6 @@ public:
             {
                 arg.argc = 0;
                 arg.argv.clear();
-                arg.ret = 0;
             }
 
             if (event->i == std::size(arg.argv))
@@ -301,27 +300,22 @@ public:
 
 class sys_exit_execve_handler
 {
-    std::unordered_map<__u64, execve_argument>& map_;
+    const std::unordered_map<__u64, execve_argument>& map_;
 
 public:
     sys_exit_execve_handler(decltype(map_) map) :
         map_{map}
     {}
 
-    void operator()(int cpu, void *data, __u32 size)
+    void operator()(int cpu, void *data, __u32 size) const
     {
         auto event = static_cast<sys_exit_execve_event*>(data);
 
-        std::print("pid: {:>6}, tid: {:>6}, execve,  ret: {:>5}, command: ", 
-            event->tgid, // pid
-            event->pid,  // tid
-            event->ret);
- 
-        auto& arg = map_[event->pid_tgid];
-        arg.ret = event->ret;
-
-        std::ranges::copy(arg.argv, std::ostream_iterator<decltype(arg.argv)::value_type>{std::cout, " "});
-        std::println();
+        std::println("pid: {:>6}, tid: {:>6}, execve,  ret: {:>5}, command: {}", 
+            event->tgid,
+            event->pid,
+            event->ret,
+            map_.at(event->pid_tgid).argv);
     }
 };
 
@@ -395,8 +389,7 @@ public:
 
         auto& content = map_[event->pid_tgid];
 
-        auto result  = std::copy_n(event->buf, event->size, std::begin(content) + event->index);
-        if  (result != std::end(content))
+        if (std::copy_n(event->buf, event->size, std::begin(content) + event->index) != std::end(content))
             return;
 
         constexpr std::array<char, 4> elf_magic{ 0x7F, 'E', 'L', 'F' };
@@ -408,8 +401,7 @@ public:
         }
         else
         {
-            std::ranges::copy(content, std::ostreambuf_iterator<char>(std::cout));
-            std::println();
+            std::println("{}", content);
         }
     }
 };
@@ -902,6 +894,8 @@ int main(int argc, char *argv[])
     bool redirect = argc > 1;
     if  (redirect)
     {
+        std::ios::sync_with_stdio(false);
+
         // 開啟要寫入的檔案（O_WRONLY 為寫入模式，O_CREAT 如果檔案不存在就建立它，O_TRUNC 為清空檔案內容
         int fd = open(argv[1], O_WRONLY | O_CREAT | O_TRUNC, 0666);
         if (fd < 0)
@@ -964,9 +958,9 @@ int main(int argc, char *argv[])
         throw std::system_error{-error, std::system_category()};
 
     std::array<__u64, MAX_SYSCALL> negative_ret{};
-    set_ret(negative_ret, __NR_open);
-    set_ret(negative_ret, __NR_openat);
-    set_ret(negative_ret, __NR_openat2);
+    set_ret(negative_ret, SYS_open);
+    set_ret(negative_ret, SYS_openat);
+    set_ret(negative_ret, SYS_openat2);
 
     // update negative_ret to bpf map
     if ((error = bpf_map__update_elem(skeleton->maps.negative_ret_map,
@@ -1047,7 +1041,7 @@ int main(int argc, char *argv[])
     if (!perf_buffer_ptr)
         throw std::system_error{-errno, std::system_category(), "Failed to create perf buffer"};
 
-    bool attach_read = false;
+    bool attach_read = true;
     bpf_program__set_autoattach(skeleton->progs.tracepoint__syscalls__sys_enter_read, attach_read);
     bpf_program__set_autoattach(skeleton->progs.tracepoint__syscalls__sys_exit_read,  attach_read);
 
