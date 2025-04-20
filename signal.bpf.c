@@ -295,12 +295,15 @@ long output_path(void *ctx, const struct path *path)
     event->base.event_id = EVENT_ID(path_event);
     event->path          = *path;
     event->index         = RETURN_ERROR(read_path(event->name, path));
+    event->ktime         = bpf_ktime_get_ns();
 
-    const u64 ktime = bpf_ktime_get_ns();
-    RETURN_ERROR(bpf_map_update_elem(&path_map, path, &ktime, BPF_EXIST));
+    RETURN_ERROR(bpf_perf_event_output(
+        ctx, &events, BPF_F_CURRENT_CPU, event,
+        offsetof(struct path_event, name) + MAX_ARG_LEN - MAX_NAME_LEN));
 
-    RETURN_ERROR(bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU,
-                                       event, sizeof(*event)));
+    // 如果 bpf_perf_event_output 失敗，則不會更新 ktime
+    RETURN_ERROR(bpf_map_update_elem(&path_map, path, &event->ktime, BPF_EXIST));
+
     return 0;
 }
 

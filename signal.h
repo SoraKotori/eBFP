@@ -112,6 +112,7 @@ struct path_event
     struct event_base base;
 
     struct path path;
+    __u64 ktime;
     __u32 index;
     char name[MAX_ARG_LEN];
 };
