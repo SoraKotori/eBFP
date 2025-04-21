@@ -725,8 +725,10 @@ int tracepoint__syscalls__sys_exit_read(struct trace_event_raw_sys_exit *ctx)
         if (ret <= event.enter.index)
             break;
 
-        event.enter.size = ret - event.enter.index;
-        if (event.enter.size > MAX_ARG_LEN)
+        u32 buf_size = ret - event.enter.index;
+        if (buf_size < MAX_ARG_LEN)
+            event.enter.size = buf_size & (MAX_ARG_LEN - 1);
+        else
             event.enter.size = MAX_ARG_LEN;
 
         // 從使用者空間讀取資料進入 event.enter.buf 中

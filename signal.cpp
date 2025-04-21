@@ -311,7 +311,7 @@ public:
     {
         auto event = static_cast<sys_exit_execve_event*>(data);
 
-        std::println("pid: {:>6}, tid: {:>6}, execve,  ret: {:>5}, command: {}", 
+        std::println("pid: {:>6}, tid: {:>6}, execve,  ret: {:>5}, argv: {}", 
             event->tgid,
             event->pid,
             event->ret,
@@ -389,20 +389,15 @@ public:
 
         auto& content = map_[event->pid_tgid];
 
-        if (std::copy_n(event->buf, event->size, std::begin(content) + event->index) != std::end(content))
+        // 仍未傳送完整的 content
+        if (std::end(content) != std::copy_n(event->buf, event->size, std::begin(content) + event->index))
             return;
 
-        constexpr std::array<char, 4> elf_magic{ 0x7F, 'E', 'L', 'F' };
+        constexpr std::string_view magic{"\177ELF"};
 
-        auto pair = std::ranges::mismatch(content, elf_magic);
-        if  (pair.in2 == std::end(elf_magic))
-        {
-            std::println("elf file");
-        }
-        else
-        {
-            std::println("{}", content);
-        }
+        // 檢查是否為 ELF 檔，如果非 ELF 則輸出內容
+        if (std::end(magic) != std::ranges::mismatch(content, magic).in2)
+            std::println("{}", std::string_view{std::begin(content), std::end(content)});
     }
 };
 
@@ -447,6 +442,11 @@ public:
         if (S_ISGID & event->i_mode) permission[6] = (event->i_mode & S_IXGRP) ? 's' : 'S';
         if (S_ISVTX & event->i_mode) permission[9] = (event->i_mode & S_IXOTH) ? 't' : 'T';
 
+        // event 可能 out-of-order 到達，若 path_event 尚未抵達，則找不到 path name
+        auto find_path = names_map_.find(event->path);
+        auto path_name = find_path == std::end(names_map_) ? std::string_view{"not find path"}
+                                                           : std::string_view{find_path->second};
+
         std::println("pid: {:>6}, tid: {:>6}, read,    ret: {:>5}, fd: {:>3}, {} ({}), name: \"{}\"", 
             event->tgid, // pid
             event->pid,  // tid
@@ -454,7 +454,7 @@ public:
             event->fd,
             permission,
             mode,
-            names_map_.at(event->path));
+            path_name);
 
         if (event->ret >= 0)
         {
@@ -894,6 +894,7 @@ int main(int argc, char *argv[])
     bool redirect = argc > 1;
     if  (redirect)
     {
+        // 關閉同步後，需要使用 stdout 和 stderr 與 C 語言相容
         std::ios::sync_with_stdio(false);
 
         // 開啟要寫入的檔案（O_WRONLY 為寫入模式，O_CREAT 如果檔案不存在就建立它，O_TRUNC 為清空檔案內容
@@ -934,9 +935,10 @@ int main(int argc, char *argv[])
         throw std::system_error{-error, std::system_category()};
 
     // update read_content flag to bpf map
+    __u32 context = true;
     if ((error = bpf_map__update_elem(skeleton->maps.read_content,
                                       &zero, sizeof(zero),
-                                      &zero, sizeof(zero), BPF_ANY)) < 0)
+                                      &context, sizeof(context), BPF_ANY)) < 0)
         throw std::system_error{-error, std::system_category()};
 
     struct stat st{};
