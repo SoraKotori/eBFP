@@ -292,9 +292,23 @@ public:
 
             if (event->i == std::size(arg.argv))
                 arg.argv.emplace_back(event->argv_i, event->argv_i_size - 1); // not include '\0'
+            else
+                std::println("pid: {:>6}, tid: {:>6}, execve, cpu: {}, warning: out of order",
+                             event->tgid,
+                             event->pid,
+                             cpu);
         }
         else
+        {
             arg.argc = event->i;
+
+            std::println("pid: {:>6}, tid: {:>6}, execve, cpu: {}, argc: {}, argv: {}",
+                         event->tgid,
+                         event->pid,
+                         cpu,
+                         arg.argc,
+                         arg.argv);
+        }
     }
 };
 
@@ -311,11 +325,16 @@ public:
     {
         auto event = static_cast<sys_exit_execve_event*>(data);
 
-        std::println("pid: {:>6}, tid: {:>6}, execve,  ret: {:>5}, argv: {}", 
-            event->tgid,
-            event->pid,
-            event->ret,
-            map_.at(event->pid_tgid).argv);
+        std::print("pid: {:>6}, tid: {:>6}, execve, cpu: {}, ret: {:>5}", 
+                   event->tgid,
+                   event->pid,
+                   cpu,
+                   event->ret);
+
+        if (std::end(map_) == map_.find(event->pid_tgid))
+            std::println(", warning: not find argv");
+        else
+            std::println();
     }
 };
 
@@ -1043,7 +1062,7 @@ int main(int argc, char *argv[])
     if (!perf_buffer_ptr)
         throw std::system_error{-errno, std::system_category(), "Failed to create perf buffer"};
 
-    bool attach_read = true;
+    bool attach_read = false;
     bpf_program__set_autoattach(skeleton->progs.tracepoint__syscalls__sys_enter_read, attach_read);
     bpf_program__set_autoattach(skeleton->progs.tracepoint__syscalls__sys_exit_read,  attach_read);
 
@@ -1065,5 +1084,6 @@ int main(int argc, char *argv[])
             throw std::system_error{-error, std::system_category(), "Error polling perf buffer"};
     }
 
+    std::println("Stopped. Exiting normally.");
     return 0;
 }
