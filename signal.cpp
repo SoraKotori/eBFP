@@ -23,8 +23,8 @@
 
 struct path
 {
-	void *mnt;
-	void *dentry;
+    void *mnt;
+    void *dentry;
 
     bool operator==(const path&) const = default;
 };
@@ -36,7 +36,7 @@ struct path_hash
         // 先對每個成員做 std::hash
         std::size_t h1 = std::hash<decltype(path.mnt)>{}(path.mnt);
         std::size_t h2 = std::hash<decltype(path.dentry)>{}(path.dentry);
-        
+
         // 簡單的「XOR + 移位」混合做法：
         // 這裡 0x9e3779b97f4a7c15ULL 是常見的「黃金比例」常數
         // 只是一種常見的雜湊結合技巧，讓結果分佈更均勻
@@ -144,7 +144,7 @@ void print_stack_trace(blaze_normalizer* normalizer,
     //     std::println("blaze_normalize_user_addrs_opts: {}", blaze_err_str(blaze_err_last()));
     //     return;
     // }
-        
+
     // for (std::size_t i = 0; i < std::size(addrs); i++)
     // {
     //     const auto& meta = output->metas[output->outputs[i].meta_idx];
@@ -196,7 +196,7 @@ void print_stack_trace(blaze_normalizer* normalizer,
     //                     sym.name,
     //                     sym.addr,
     //                     sym.offset);
-                    
+
     //                 if (sym.code_info.file)
     //                     std::print(", file: {}:{}:{}",
     //                         sym.code_info.file,
@@ -325,7 +325,7 @@ public:
     {
         auto event = static_cast<sys_exit_execve_event*>(data);
 
-        std::print("pid: {:>6}, tid: {:>6}, execve, cpu: {}, ret: {:>5}", 
+        std::print("pid: {:>6}, tid: {:>6}, execve, cpu: {}, ret: {:>5}",
                    event->tgid,
                    event->pid,
                    cpu,
@@ -466,7 +466,7 @@ public:
         auto path_name = find_path == std::end(names_map_) ? std::string_view{"not find path"}
                                                            : std::string_view{find_path->second};
 
-        std::println("pid: {:>6}, tid: {:>6}, read,    ret: {:>5}, fd: {:>3}, {} ({}), name: \"{}\"", 
+        std::println("pid: {:>6}, tid: {:>6}, read,    ret: {:>5}, fd: {:>3}, {} ({}), name: \"{}\"",
             event->tgid, // pid
             event->pid,  // tid
             event->ret,
@@ -598,12 +598,12 @@ void handle_sched_process_exit(int cpu, void *data, __u32 size)
 {
     auto event = static_cast<sched_process_exit_event*>(data);
 
-    std::print("pid: {:>6}, tid: {:>6}, ", 
+    std::print("pid: {:>6}, tid: {:>6}, ",
         event->tgid, // pid
         event->pid); // tid
 
     auto status = event->exit_code;
-    
+
     if (WIFEXITED(status))
         std::println("exited,  ret: {:>5}", WEXITSTATUS(status));
 
@@ -631,7 +631,7 @@ public:
     {
         auto event = static_cast<sys_exit_event*>(data);
 
-        std::println("pid: {:>6}, tid: {:>6}, syscall, cpu: {}, ret: {:>5}, number: {}", 
+        std::println("pid: {:>6}, tid: {:>6}, syscall, cpu: {}, ret: {:>5}, number: {}",
             event->tgid,
             event->pid,
             cpu,
@@ -649,15 +649,15 @@ public:
 #endif
 
 #ifndef PROT_READ
-#define PROT_READ	0x1  /* Page can be read.  */
+#define PROT_READ   0x1  /* Page can be read.  */
 #endif
 
 #ifndef MAP_PRIVATE
-#define MAP_PRIVATE	0x02 /* Changes are private.  */
+#define MAP_PRIVATE 0x02 /* Changes are private.  */
 #endif
 
 #ifndef MAP_FIXED
-#define MAP_FIXED	0x10 /* Interpret addr exactly.  */
+#define MAP_FIXED   0x10 /* Interpret addr exactly.  */
 #endif
 
 class do_mmap_handler
@@ -840,7 +840,7 @@ public:
                         sym.name,
                         sym.addr,
                         sym.offset);
-                    
+
                     if (sym.code_info.file)
                         std::print(", file: {}:{}:{}",
                             sym.code_info.file,
@@ -1050,7 +1050,7 @@ int main(int argc, char *argv[])
     // perf buffer 選項
     perf_buffer_opts pb_opts{ .sz = sizeof(perf_buffer_opts) };
 
-    // 建立 perf buffer 
+    // 建立 perf buffer
     auto perf_buffer_ptr = std::unique_ptr<perf_buffer, decltype(&perf_buffer__free)>{
          perf_buffer__new(bpf_map__fd(skeleton->maps.events),
                           512,
