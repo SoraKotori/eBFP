@@ -25,8 +25,7 @@ struct path
 {
     void *mnt;
     void *dentry;
-
-    bool operator==(const path&) const = default;
+    auto operator<=>(const path&) const = default;
 };
 
 struct path_hash
@@ -41,15 +40,6 @@ struct path_hash
         // 這裡 0x9e3779b97f4a7c15ULL 是常見的「黃金比例」常數
         // 只是一種常見的雜湊結合技巧，讓結果分佈更均勻
         return h1 ^ (h2 + 0x9e3779b97f4a7c15ULL + (h1 << 6) + (h1 >> 2));
-    }
-};
-
-struct path_equal
-{
-    bool operator()(const path& left, const path& right) const
-    {
-        return left.dentry == right.dentry &&
-               left.mnt    == right.mnt;
     }
 };
 
@@ -423,7 +413,7 @@ public:
 class sys_exit_read_handler
 {
     std::unordered_map<__u64, read_argument>& map_;
-    const std::unordered_map<path, std::string, path_hash, path_equal>& names_map_;
+    const std::unordered_map<path, std::string, path_hash>& names_map_;
 
 public:
     sys_exit_read_handler(decltype(map_) map, decltype(names_map_) names_map) :
@@ -484,7 +474,7 @@ public:
 
 class path_handler
 {
-    std::unordered_map<path, std::string, path_hash, path_equal>& names_map_;
+    std::unordered_map<path, std::string, path_hash>& names_map_;
     bpf_map *path_map_;
 
 public:
@@ -543,7 +533,7 @@ struct vm_area_comp
 class vm_area_handler
 {
     std::unordered_map<__u64, std::set<vm_area_event::vm_area, vm_area_comp>>& vm_area_map_;
-    std::unordered_map<path,  std::string, path_hash, path_equal>& names_map_;
+    std::unordered_map<path,  std::string, path_hash>& names_map_;
     std::unordered_map<int, __u64> ktime_map_;
 
 public:
@@ -715,7 +705,7 @@ class stack_handler
     blaze_normalizer* normalizer_;
     blaze_symbolizer* symbolizer_;
     const std::unordered_map<__u64, std::set<vm_area_event::vm_area, vm_area_comp>>& vm_area_map_;
-    const std::unordered_map<path,  std::string, path_hash, path_equal>& names_map_;
+    const std::unordered_map<path,  std::string, path_hash>& names_map_;
     bpf_map *path_map_;
 
 public:
@@ -1030,7 +1020,7 @@ int main(int argc, char *argv[])
     std::unordered_map<__u64, kill_argument> kill_map;
     std::unordered_map<__u64, read_argument> read_map;
     std::unordered_map<__u64, std::set<vm_area_event::vm_area, vm_area_comp>> vm_area_map;
-    std::unordered_map<path,  std::string, path_hash, path_equal> names_map;
+    std::unordered_map<path,  std::string, path_hash> names_map;
 
     event_handler<EVENT_MAX> handler;
     handler[EVENT_ID(sys_enter_execve_event)]   = sys_enter_execve_handler{execve_map};
