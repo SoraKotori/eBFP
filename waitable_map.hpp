@@ -52,6 +52,8 @@ public:
         {
             handle_iterator->second.wait_iterator = pair.first->second.wait_iterator;
             handle_iterator->second.head_handle.resume();
+
+            wait_handles_.erase(handle_iterator);
         }
 
         return pair;
@@ -76,12 +78,16 @@ private:
 
 struct Task
 {
-    struct promise_type
+    class promise_type
     {
-        Task get_return_object() { return {}; };
-        auto initial_suspend() { return std::suspend_never{}; }
-        auto final_suspend()   { return std::suspend_never{}; }
+        std::coroutine_handle<promise_type> resume_handle_;
 
+    public:
+        Task get_return_object() { return {}; };
+        auto initial_suspend()   { return std::suspend_never{}; }
+        auto final_suspend()     { return std::suspend_never{}; }
+
+        auto& resume_handle()    { return resume_handle_; }
     };
 };
 
