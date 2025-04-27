@@ -1,29 +1,35 @@
-#include <flat_map>
+#include <unordered_map>
 
-template<typename Key,
+template<template<typename...> typename MapContainer,
+         typename Key,
          typename T,
-         typename MapContainer = std::unordered_map<Key, T>>
+         typename... ContainerArgs>
 class waitable_map
 {
 public:
-    struct suspended_coroutine;
-
-    using map_container_type = MapContainer;
-    using coroutine_container_type = std::flat_map<Key, suspended_coroutine>;
-
+    using map_container_type = MapContainer<Key, T, ContainerArgs...>;
+    using map_key_type = typename map_container_type::key_type;
     using map_iterator = typename map_container_type::iterator;
-    using coroutine_reference = typename coroutine_container_type::mapped_type&;
 
-    struct suspended_coroutine
-    {
-        // head handle: coroutine3 -> coroutine2 -> coroutine1 -> noop
-        std::coroutine_handle<> waiting_handles = std::noop_coroutine();
-        map_iterator            waiting_iterator;
-    };
+    // coroutine chain: coroutine3 -> coroutine2 -> coroutine1 -> noop
+    using coroutine_container_type = MapContainer<Key, std::coroutine_handle<>, ContainerArgs...>;
+    using coroutine_key_type = typename coroutine_container_type::key_type;
 
     struct map_awaiter
     {
-        std::variant<map_iterator, coroutine_reference> variant;
+        // coroutine container 插入元素後，原本的 iterators 和 references 可能會失效，
+        // 因此無法保存在 map_awaiter 中，作為 await_resume 時所使用，解決方法:
+        // 1. 保存 container 和 key，每次重新查詢
+        // 2. 改用 std::map 基於 node-based 的方法
+        // 3. 使用 stable_vector 或 heap，確保 iterators 和 references 不會失效
+        struct await_key
+        {
+            const map_container_type& map;
+            coroutine_container_type& coroutines;
+            const coroutine_key_type& key;
+        };
+
+        std::variant<map_iterator, await_key> variant;
 
         auto await_ready() const
         {
@@ -33,8 +39,10 @@ public:
         template<typename Promise>
         auto await_suspend(std::coroutine_handle<Promise> current_handle)
         {
+            auto [_, coroutines, key] = std::get<await_key>(variant);
+
             auto&  resume_handle = current_handle.promise().resume_handle();
-            auto& waiting_handle = std::get<coroutine_reference>(variant).waiting_handles;
+            auto& waiting_handle = coroutines.try_emplace(key, std::noop_coroutine()).first;
 
             // resume_handle <- waiting_handle <- current_handle
             return std::exchange(resume_handle, std::exchange(waiting_handle, current_handle));
@@ -44,37 +52,29 @@ public:
         {
             return std::holds_alternative<map_iterator>(variant) ?
                 std::get<map_iterator>(variant) :
-                std::get<coroutine_reference>(variant).waiting_iterator;
+                std::get<await_key>(variant).map.find(std::get<await_key>(variant).key);
         }
     };
 
-    template<typename... Args>
-    auto emplace(Args&&... args)
+    template<typename K, typename... Args>
+    auto try_emplace(K&& key, Args&&... args)
     {
-        auto pair = map_.emplace(std::forward<Args>(args)...);
+        auto pair = map_.try_emplace(std::forward<K>(key), std::forward<Args>(args)...);
+        if (!pair.second) // pair.bool
+            return pair;
 
-                                             // pair.iterator->key
-        auto handle_iterator = coroutines_.find(pair.first->first);
-        if  (handle_iterator != std::end(coroutines_))
-        {
-                                                 // pair.iterator->value.wait_iterator
-            handle_iterator->second.wait_iterator = pair.first->second.wait_iterator;
-            handle_iterator->second.waiting_handles.resume();
-
-            coroutines_.erase(handle_iterator);
-        }
+        if (auto node = coroutines_.extract(pair.first->first)) // pair.iterator->key_type
+            node.mapped.resume(); // handle.resume
 
         return pair;
     }
 
     template<typename K>
-    map_awaiter find(K&& key)
+    auto async_find(const K& key)
     {
-        auto map_it = map_.find(std::forward<K>(key));
-        if  (map_it == std::end(map_))
-            return {coroutines_[std::forward<K>(key)].second}; // 插入後，在插入元素之後的 reference 會失效
-        else
-            return {map_it};
+        auto   map_it = map_.find(key);
+        return map_it == std::end(map_) ? map_awaiter{map_, coroutines_, key}
+                                        : map_awaiter{map_it};
     }
 
 private:
@@ -97,7 +97,7 @@ struct Task
     };
 };
 
-Task coroutine(waitable_map<__u64, path>& map)
+Task coroutine(waitable_map<std::unordered_map, __u64, path>& map)
 {
     return {};
 }
