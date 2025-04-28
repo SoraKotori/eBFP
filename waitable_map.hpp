@@ -130,18 +130,18 @@ public:
         }
     };
 
-    // template<typename Key>
-    // auto& operator[](Key&& key)
-    // {
-    //     auto pair = map_.try_emplace(std::forward<Key>(key));
-    //     if (!pair.second) // pair.bool
-    //         return pair.first->second;
+    template<typename Key, typename Mapped>
+    auto insert_or_assign(Key&& key, Mapped&& obj)
+    {
+        auto pair = map_.insert_or_assign(std::forward<Key>(key), std::forward<Mapped>(obj));
+        if (!pair.second)
+            return pair;
 
-    //     if (auto node = coroutines_.extract(std::forward<Key>(key)))
-    //         node.mapped().resume(); // handle.resume()
+        if (auto node = coroutines_.extract(std::forward<Key>(key)))
+            node.mapped().resume(); // handle.resume()
 
-    //     return pair.first->second;
-    // }
+        return pair;
+    }
 
     template<typename Key, typename... Args>
     auto try_emplace(Key&& key, Args&&... args)
@@ -154,6 +154,12 @@ public:
             node.mapped().resume(); // handle.resume()
 
         return pair;
+    }
+
+    template<typename Key>
+    auto find(const Key& key)
+    {
+        return map_.find(key);
     }
 
     template<typename Key>
