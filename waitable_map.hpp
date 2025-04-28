@@ -85,43 +85,73 @@ private:
     coroutine_container_type coroutines_;
 };
 
-struct promise
-{
-    using coroutine_handle_type = std::coroutine_handle<promise>;
-
-    coroutine_handle_type resume_handle;
-
-    auto get_return_object()
-    {
-        return coroutine_handle_type::from_promise(*this);
-    };
-
-    auto initial_suspend()
-    {
-        return std::suspend_never{};
-    }
-
-    // 若非回傳 std::suspend_never，則需要手動呼叫 .destroy()
-    auto final_suspend() -> std::coroutine_handle<>
-    {
-        if (resume_handle)
-            return resume_handle;
-        else
-            return std::noop_coroutine();
-    }
-
-    void return_void() {}
-};
-
 template<typename Promise>
 struct Task : std::coroutine_handle<>
 {
     using promise_type = Promise;
 };
 
+struct promise
+{
+    using coroutine_handle_type = std::coroutine_handle<promise>;
+
+    coroutine_handle_type resume_handle;
+
+    struct final_awaiter
+    {
+        auto await_ready() noexcept { return false; }
+
+        template<typename Promise>
+        auto await_suspend(std::coroutine_handle<Promise> handle) noexcept -> std::coroutine_handle<>
+        {
+            try
+            {
+                // .promise() 並未標記為 noexcept，可能因為無效的 handle 拋出 exception
+                auto resume_handle = handle.promise().resume_handle;
+
+                // 可能會因為 promise_type 的 destructor 拋出例外，
+                // 並且因為 final_suspend 要求 noexcept，所以需要 try-catch 以避免直接觸發 std::terminate()
+                // 或考慮將 .destroy() 移動到外部處理
+                handle.destroy();
+
+                if (resume_handle)
+                    return resume_handle;
+            }
+            catch(const std::exception& exception)
+            {
+                std::println("{}", exception.what());
+            }
+
+            return std::noop_coroutine();
+        }
+
+        auto await_resume() noexcept {}
+    };
+
+    auto get_return_object()
+    {
+        return Task<promise>{coroutine_handle_type::from_promise(*this)};
+    }
+
+    auto initial_suspend()
+    {
+        return std::suspend_never{};
+    }
+
+    // coroutine 的要求中規範 final_suspend 需要 noexcept
+    auto final_suspend() noexcept
+    {
+        // 若不回傳 std::suspend_never，則需要手動呼叫 .destroy()
+        return final_awaiter{};
+    }
+
+    auto return_void() {}
+    auto unhandled_exception() {}
+};
+
 Task<promise> coroutine()
 {
-    // waitable_map<std::unordered_map, __u64, path> map;
+    waitable_map<std::unordered_map, __u64, path> map;
 
     co_return;
 }
