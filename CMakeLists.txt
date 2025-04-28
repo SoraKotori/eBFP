@@ -83,3 +83,8 @@ target_link_libraries(signal PRIVATE signal_skel blazesym_c)
 target_link_options(  signal PRIVATE $<$<CXX_COMPILER_ID:Clang>:-stdlib=libc++>)
 target_compile_features(signal PRIVATE cxx_std_23)
 target_compile_options( signal PRIVATE $<$<CXX_COMPILER_ID:Clang>:-stdlib=libc++>)
+
+add_executable(waitable_map_test waitable_map_test.cpp)
+target_compile_features(waitable_map_test PRIVATE cxx_std_23)
+target_compile_options( waitable_map_test PRIVATE -fsanitize=address,undefined)
+target_link_options(    waitable_map_test PRIVATE -fsanitize=address,undefined)

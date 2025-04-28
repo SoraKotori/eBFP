@@ -1,4 +1,8 @@
-#include <unordered_map>
+#include <coroutine>
+#include <utility>
+#include <exception>
+#include <print>
+#include <variant>
 
 template<typename Promise>
 struct Task : std::coroutine_handle<>
@@ -134,7 +138,7 @@ public:
             return pair;
 
         if (auto node = coroutines_.extract(std::forward<K>(key)))
-            node.mapped.resume(); // handle.resume()
+            node.mapped().resume(); // handle.resume()
 
         return pair;
     }
@@ -153,12 +157,3 @@ private:
     map_container_type map_;
     coroutine_container_type coroutines_;
 };
-
-Task<promise> coroutine(waitable_map<std::unordered_map, __u64, std::string>& map)
-{
-    auto iterator = co_await map.async_find(10);
-
-    std::println("find string: {}", iterator->second);
-
-    co_return;
-}
