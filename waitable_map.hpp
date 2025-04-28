@@ -28,7 +28,7 @@ struct promise
                 // .promise() 並未標記為 noexcept，可能因為無效的 handle 拋出 exception
                 auto resume_handle = handle.promise().resume_handle;
 
-                // 可能會因為 promise_type 的 destructor 拋出例外，
+                // .destroy() 可能會因為 promise_type 的 destructor 拋出例外，
                 // 並且因為 final_suspend 要求 noexcept，所以需要 try-catch 以避免直接觸發 std::terminate()
                 // 或考慮將 .destroy() 移動到外部處理
                 handle.destroy();
@@ -130,14 +130,27 @@ public:
         }
     };
 
-    template<typename K, typename... Args>
-    auto try_emplace(K&& key, Args&&... args)
+    // template<typename Key>
+    // auto& operator[](Key&& key)
+    // {
+    //     auto pair = map_.try_emplace(std::forward<Key>(key));
+    //     if (!pair.second) // pair.bool
+    //         return pair.first->second;
+
+    //     if (auto node = coroutines_.extract(std::forward<Key>(key)))
+    //         node.mapped().resume(); // handle.resume()
+
+    //     return pair.first->second;
+    // }
+
+    template<typename Key, typename... Args>
+    auto try_emplace(Key&& key, Args&&... args)
     {
-        auto pair = map_.try_emplace(std::forward<K>(key), std::forward<Args>(args)...);
+        auto pair = map_.try_emplace(std::forward<Key>(key), std::forward<Args>(args)...);
         if (!pair.second) // pair.bool
             return pair;
 
-        if (auto node = coroutines_.extract(std::forward<K>(key)))
+        if (auto node = coroutines_.extract(std::forward<Key>(key)))
             node.mapped().resume(); // handle.resume()
 
         return pair;
