@@ -206,8 +206,8 @@ void print_stack_trace(blaze_normalizer* normalizer,
 
 struct execve_argument
 {
-    std::optional<long> ret;
-    std::optional<__u32> argc;
+    std::optional<long>      ret;
+    std::optional<__u32>     argc;
     std::vector<std::string> argv;
 
     auto println(__u32 tgid, __u32 pid, int cpu)
@@ -268,8 +268,8 @@ struct sys_exit_execve_handler
 struct kill_argument
 {
     std::optional<long> ret;
-    __u32 target_pid;
-    std::optional<int> signal;
+    __u32               target_pid;
+    std::optional<int>  signal;
 
     auto println(__u32 tgid, __u32 pid, int cpu)
     {
@@ -317,14 +317,9 @@ struct sys_exit_kill_handler
 
 using read_argument = std::vector<char>;
 
-class sys_enter_read_handler
+struct sys_enter_read_handler
 {
     std::unordered_map<__u64, read_argument>& map_;
-
-public:
-    sys_enter_read_handler(decltype(map_) map) :
-        map_{map}
-    {}
 
     void operator()(int cpu, void *data, __u32 size)
     {
@@ -344,16 +339,10 @@ public:
     }
 };
 
-class sys_exit_read_handler
+struct sys_exit_read_handler
 {
     std::unordered_map<__u64, read_argument>& map_;
     const std::unordered_map<path, std::string, path_hash>& names_map_;
-
-public:
-    sys_exit_read_handler(decltype(map_) map, decltype(names_map_) names_map) :
-        map_{map},
-        names_map_{names_map}
-    {}
 
     void operator()(int cpu, void *data, __u32 size)
     {

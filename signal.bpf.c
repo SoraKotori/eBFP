@@ -45,27 +45,6 @@ struct {
     __type(value, u64);
 } execve_map SEC(".maps");
 
-struct read_argument
-{
-    int fd;
-    void *buf;
-    size_t count;
-};
-
-struct {
-    __uint(type, BPF_MAP_TYPE_ARRAY);
-    __uint(max_entries, 1);
-    __type(key, u32);
-    __type(value, u32);
-} read_content SEC(".maps");
-
-struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, MAX_ENTRIES);
-    __type(key, u64);
-    __type(value, struct read_argument);
-} read_map SEC(".maps");
-
 struct {
     __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
     __uint(max_entries, 1);
@@ -589,8 +568,8 @@ int tracepoint__syscalls__sys_enter_kill(struct trace_event_raw_sys_enter *ctx)
     );
 
     // 檢查 signal 若為 0 則不輸出 event
-    // if (event.signal == 0)
-    //     return 0;
+    if (event.signal == 0)
+        return 0;
 
     CHECK_ERROR(bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU,
                                       &event, sizeof(event)));
@@ -625,6 +604,22 @@ int tracepoint__syscalls__sys_exit_kill(struct trace_event_raw_sys_exit *ctx)
     return 0;
 }
 
+// 在 sys_enter_read 階段，buf 仍未載入任何資料。
+// 此時需保存 buf 的位址，待 sys_exit_read 階段後才能取得實際資料。
+struct read_argument
+{
+    int fd;
+    void *buf;
+    size_t count;
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, MAX_ENTRIES);
+    __type(key, u64);
+    __type(value, struct read_argument);
+} read_map SEC(".maps");
+
 SEC("tracepoint/syscalls/sys_enter_read")
 int tracepoint__syscalls__sys_enter_read(struct trace_event_raw_sys_enter *ctx)
 {
@@ -648,6 +643,13 @@ int tracepoint__syscalls__sys_enter_read(struct trace_event_raw_sys_enter *ctx)
     return 0;
 }
 
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, u32);
+    __type(value, u32);
+} read_content SEC(".maps");
+
 SEC("tracepoint/syscalls/sys_exit_read")
 int tracepoint__syscalls__sys_exit_read(struct trace_event_raw_sys_exit *ctx)
 {
@@ -655,7 +657,7 @@ int tracepoint__syscalls__sys_exit_read(struct trace_event_raw_sys_exit *ctx)
     union
     {
         struct sys_enter_read_event enter;
-        struct sys_exit_read_event exit;
+        struct sys_exit_read_event  exit;
     } event;
 
     u64 pid_tgid = bpf_get_current_pid_tgid();
@@ -689,7 +691,8 @@ int tracepoint__syscalls__sys_exit_read(struct trace_event_raw_sys_exit *ctx)
     CHECK_ERROR(try_update_path(ctx, &event.exit.path));
 
     // ------------------------------------------------------------
-
+    // 處理 sys_exit_read_event 事件:
+    // ret、fd、path、inode mode (權限資訊)。
     // ------------------------------------------------------------
 
     // 初始化並填入 sys_exit_read_event 結構
