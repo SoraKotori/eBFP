@@ -206,78 +206,62 @@ void print_stack_trace(blaze_normalizer* normalizer,
 
 struct execve_argument
 {
-    std::size_t argc = 0;
+    std::optional<long> ret;
+    std::optional<__u32> argc;
     std::vector<std::string> argv;
+
+    auto println(__u32 tgid, __u32 pid, int cpu)
+    {
+        std::println("pid: {:>6}, tid: {:>6}, execve, cpu: {}, ret: {:>5}, argc: {}, argv: {}",
+            tgid,
+            pid,
+            cpu,
+            ret.value(),
+            argc.value(),
+            argv);
+    }
 };
 
-class sys_enter_execve_handler
+struct sys_enter_execve_handler
 {
     std::unordered_map<__u64, execve_argument>& map_;
-
-public:
-    sys_enter_execve_handler(decltype(map_) map) :
-        map_{map}
-    {}
 
     void operator()(int cpu, void *data, __u32 size)
     {
         auto event = static_cast<sys_enter_execve_event*>(data);
 
-        auto& arg = map_[event->pid_tgid];
+        auto& argument = map_[event->ktime];
 
         if (event->argv_i_size)
         {
-            if (event->i == 0)
-            {
-                arg.argc = 0;
-                arg.argv.clear();
-            }
-
-            if (event->i == std::size(arg.argv))
-                arg.argv.emplace_back(event->argv_i, event->argv_i_size - 1); // not include '\0'
+            if (event->i == std::size(argument.argv))
+                argument.argv.emplace_back(event->argv_i, event->argv_i_size - 1); // not include '\0'
             else
                 std::println("pid: {:>6}, tid: {:>6}, execve, cpu: {}, warning: out of order",
-                             event->tgid,
-                             event->pid,
-                             cpu);
+                             event->tgid, event->pid, cpu);
         }
         else
         {
-            arg.argc = event->i;
-
-            std::println("pid: {:>6}, tid: {:>6}, execve, cpu: {}, argc: {}, argv: {}",
-                         event->tgid,
-                         event->pid,
-                         cpu,
-                         arg.argc,
-                         arg.argv);
+            argument.argc = event->i;
+            if (argument.ret)
+                argument.println(event->tgid, event->pid, cpu);
         }
     }
 };
 
-class sys_exit_execve_handler
+struct sys_exit_execve_handler
 {
-    const std::unordered_map<__u64, execve_argument>& map_;
+    std::unordered_map<__u64, execve_argument>& map_;
 
-public:
-    sys_exit_execve_handler(decltype(map_) map) :
-        map_{map}
-    {}
-
-    void operator()(int cpu, void *data, __u32 size) const
+    void operator()(int cpu, void *data, __u32 size)
     {
         auto event = static_cast<sys_exit_execve_event*>(data);
 
-        std::print("pid: {:>6}, tid: {:>6}, execve, cpu: {}, ret: {:>5}",
-                   event->tgid,
-                   event->pid,
-                   cpu,
-                   event->ret);
+        auto& argument = map_[event->ktime];
+        argument.ret = event->ret;
 
-        if (std::end(map_) == map_.find(event->pid_tgid))
-            std::println(", warning: not find argv");
-        else
-            std::println();
+        if (argument.argc)
+            argument.println(event->tgid, event->pid, cpu);
     }
 };
 

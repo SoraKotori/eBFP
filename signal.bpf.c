@@ -42,7 +42,7 @@ struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, MAX_ENTRIES);
     __type(key, u64);
-    __type(value, int);
+    __type(value, u64);
 } execve_map SEC(".maps");
 
 struct {
@@ -192,6 +192,10 @@ struct EVENT_TYPE name =                  \
 #define PRINT_NULL(expr) \
     bpf_printk(__FILE__ ":" STR(__LINE__) ": null pointer: " #expr ": %s", __func__); \
 
+// 注意：CHECK_NULL 僅應用於錯誤檢查。
+// 對於正常、可接受的退出情形，應直接撰寫：
+// if (!__ptr)
+//     return 0;
 #define CHECK_NULL(expr)         \
 ({                               \
     typeof(expr) __ptr = (expr); \
@@ -544,8 +548,8 @@ output:
         ctx, &events, BPF_F_CURRENT_CPU, &event,
         offsetof(struct sys_enter_execve_event, argv_i_size) + sizeof(event.argv_i_size)));
 
-    // 標記此 pid_tgid 在 enter execve 時處理過，value 只作為必要參數傳入
-    CHECK_ERROR(bpf_map_update_elem(&execve_map, &event.pid_tgid, &zero, BPF_ANY));
+    // 標記此 pid_tgid 在 enter execve 時處理過
+    CHECK_ERROR(bpf_map_update_elem(&execve_map, &event.pid_tgid, &event.ktime, BPF_NOEXIST));
     
     return 0;
 }
@@ -558,15 +562,15 @@ int tracepoint__syscalls__sys_exit_execve(struct trace_event_raw_sys_exit *ctx)
         .ret      = ctx->ret
     );
 
-    // 檢查 execve_map 判斷先前是否在 enter execve 經過處理
-    int *execve_ptr = bpf_map_lookup_elem(&execve_map, &event.pid_tgid);
-    if (!execve_ptr)
+    // 判斷先前是否在 enter execve 經過處理
+    u64 *ktime_ptr = bpf_map_lookup_elem(&execve_map, &event.pid_tgid);
+    if (!ktime_ptr)
         return 0;
+
+    event.ktime = *ktime_ptr;
 
     if (event.ret < 0)
         CHECK_ERROR(bpf_map_delete_elem(&execve_map, &event.pid_tgid));
-
-    event.ktime = bpf_ktime_get_ns();
 
     CHECK_ERROR(bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU,
                                       &event, sizeof(event)));
@@ -623,8 +627,8 @@ int tracepoint__syscalls__sys_enter_read(struct trace_event_raw_sys_enter *ctx)
     u64 pid_tgid = bpf_get_current_pid_tgid();
 
     // 檢查 execve_map 判斷是否要處理 syscall
-    int *execve_ptr = bpf_map_lookup_elem(&execve_map, &pid_tgid);
-    if (!execve_ptr)
+    u64 *ktime_ptr = bpf_map_lookup_elem(&execve_map, &pid_tgid);
+    if (!ktime_ptr)
         return 0;
 
     struct read_argument argument =
