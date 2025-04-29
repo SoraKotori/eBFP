@@ -74,6 +74,7 @@ struct sys_enter_kill_event
     struct event_base base;
 
     PID_TGID_UNION;
+    __u64 ktime;
     __u32 target_pid;
     int signal;
 };
@@ -83,7 +84,8 @@ struct sys_exit_kill_event
     struct event_base base;
 
     PID_TGID_UNION;
-    int ret;
+    __u64 ktime;
+    long ret;
 };
 
 struct sys_enter_read_event

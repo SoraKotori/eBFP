@@ -267,54 +267,51 @@ struct sys_exit_execve_handler
 
 struct kill_argument
 {
-    __u32 target_pid = 0;
-    int signal = 0;
-    int ret = 0;
+    std::optional<long> ret;
+    __u32 target_pid;
+    std::optional<int> signal;
+
+    auto println(__u32 tgid, __u32 pid, int cpu)
+    {
+        std::println("pid: {:>6}, tid: {:>6}, kill,    ret: {:>5}, target pid: {}, signal: {}",
+            tgid,
+            pid,
+            ret.value(),
+            target_pid,
+            signal.value());
+    }
 };
 
-class sys_enter_kill_handler
+struct sys_enter_kill_handler
 {
     std::unordered_map<__u64, kill_argument>& map_;
-
-public:
-    sys_enter_kill_handler(decltype(map_) map) :
-        map_{map}
-    {}
 
     void operator()(int cpu, void *data, __u32 size)
     {
         auto event = static_cast<sys_enter_kill_event*>(data);
-        map_[event->pid_tgid] = kill_argument
-                                {
-                                    .target_pid = event->target_pid,
-                                    .signal = event->signal,
-                                    .ret = 0
-                                };
+
+        auto& argument = map_[event->ktime];
+        argument.target_pid = event->target_pid;
+        argument.signal     = event->signal;
+
+        if (argument.ret)
+            argument.println(event->tgid, event->pid, cpu);
     }
 };
 
-class sys_exit_kill_handler
+struct sys_exit_kill_handler
 {
     std::unordered_map<__u64, kill_argument>& map_;
-
-public:
-    sys_exit_kill_handler(decltype(map_) map) :
-        map_{map}
-    {}
 
     void operator()(int cpu, void *data, __u32 size)
     {
         auto event = static_cast<sys_exit_kill_event*>(data);
-        auto& arg = map_[event->pid_tgid];
 
-        std::println("pid: {:>6}, tid: {:>6}, kill,    ret: {:>5}, target pid: {}, signal: {}",
-            event->tgid, // pid
-            event->pid,  // tid
-            event->ret,
-            arg.target_pid,
-            arg.signal);
+        auto& argument = map_[event->ktime];
+        argument.ret = event->ret;
 
-        arg.ret = event->ret;
+        if (argument.signal)
+            argument.println(event->tgid, event->pid, cpu);
     }
 };
 

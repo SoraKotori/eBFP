@@ -45,13 +45,6 @@ struct {
     __type(value, u64);
 } execve_map SEC(".maps");
 
-struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, MAX_ENTRIES);
-    __type(key, u64);
-    __type(value, int);
-} kill_map SEC(".maps");
-
 struct read_argument
 {
     int fd;
@@ -578,24 +571,32 @@ int tracepoint__syscalls__sys_exit_execve(struct trace_event_raw_sys_exit *ctx)
     return 0;
 }
 
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, MAX_ENTRIES);
+    __type(key, u64);
+    __type(value, u64);
+} kill_map SEC(".maps");
+
 SEC("tracepoint/syscalls/sys_enter_kill")
 int tracepoint__syscalls__sys_enter_kill(struct trace_event_raw_sys_enter *ctx)
 {
     INIT_EVENT(event, sys_enter_kill_event,
         .pid_tgid   = bpf_get_current_pid_tgid(),
+        .ktime      = bpf_ktime_get_ns(),
         .target_pid = ctx->args[0],
         .signal     = ctx->args[1]
     );
 
     // 檢查 signal 若為 0 則不輸出 event
-    if (event.signal == 0)
-        return 0;
+    // if (event.signal == 0)
+    //     return 0;
 
-    // 更新 kill_map 作為 sys_exit_kill 的判斷條件
-    CHECK_ERROR(bpf_map_update_elem(&kill_map, &event.pid_tgid, &event.signal, BPF_NOEXIST));
-    
     CHECK_ERROR(bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU,
                                       &event, sizeof(event)));
+
+    // 標記此 pid_tgid 在 sys_enter_kill 時處理過
+    CHECK_ERROR(bpf_map_update_elem(&kill_map, &event.pid_tgid, &event.ktime, BPF_NOEXIST));
 
     return 0;
 }
@@ -608,9 +609,12 @@ int tracepoint__syscalls__sys_exit_kill(struct trace_event_raw_sys_exit *ctx)
         .ret      = ctx->ret
     );
 
-    // 檢查 kill_map 判斷是否要處理 signal
-    if (!bpf_map_lookup_elem(&kill_map, &event.pid_tgid))
+    // 判斷先前是否在 sys_enter_kill 經過處理
+    u64 *ktime_ptr = bpf_map_lookup_elem(&kill_map, &event.pid_tgid);
+    if (!ktime_ptr)
         return 0;
+
+    event.ktime = *ktime_ptr;
 
     // 即便 key 不存在，也會成功刪除，所以不能用 ENOENT 作為判斷
     CHECK_ERROR(bpf_map_delete_elem(&kill_map, &event.pid_tgid));
