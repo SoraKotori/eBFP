@@ -93,6 +93,7 @@ struct sys_enter_read_event
     struct event_base base;
 
     PID_TGID_UNION;
+    __u64 ktime;
     __u32 index;
     __u32 size;
     char buf[MAX_ARG_LEN];
@@ -103,8 +104,9 @@ struct sys_exit_read_event
     struct event_base base;
 
     PID_TGID_UNION;
+    __u64 ktime;
+    long ret;
     int fd;
-    int ret;
     __u16 i_mode;
     struct path path;
 };

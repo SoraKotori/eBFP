@@ -698,6 +698,7 @@ int tracepoint__syscalls__sys_exit_read(struct trace_event_raw_sys_exit *ctx)
     // 初始化並填入 sys_exit_read_event 結構
     event.exit.base.event_id = EVENT_ID(sys_exit_read_event);
     event.exit.pid_tgid      = pid_tgid;
+    event.exit.ktime         = bpf_ktime_get_ns();
     event.exit.fd            = read_argument.fd;
     event.exit.ret           = ctx->ret;
 
@@ -718,12 +719,19 @@ int tracepoint__syscalls__sys_exit_read(struct trace_event_raw_sys_exit *ctx)
     if (*context == false || event.exit.ret <= 0)
         return 0;
 
-    // 若 ret 為正數，代表有讀取到資料，則轉型成 unsigned 來通過驗證器，避免為負數
-    u32 ret = (u32)event.exit.ret;    
-
     // 初始化並填入 sys_enter_read_event 結構
     event.enter.base.event_id = EVENT_ID(sys_enter_read_event);
-    event.enter.pid_tgid = bpf_get_current_pid_tgid();
+
+    // 沿用 sys_exit_read_event 的 pid_tgid 和 ktime，並檢查 event 的 offset 一致
+    _Static_assert(offsetof(struct sys_enter_read_event, pid_tgid) ==
+                   offsetof(struct sys_exit_read_event,  pid_tgid),
+                   "layout mismatch: pid_tgid offset differs between enter and exit events");
+    _Static_assert(offsetof(struct sys_enter_read_event, ktime) ==
+                   offsetof(struct sys_exit_read_event,  ktime),
+                   "layout mismatch: ktime offset differs between enter and exit events");
+
+    // 若 ret 為正數，代表有讀取到資料，則轉型成 unsigned 來通過驗證器，避免為負數
+    u32 ret = (u32)event.exit.ret;    
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 3, 0)
     #pragma unroll

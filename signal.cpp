@@ -315,27 +315,98 @@ struct sys_exit_kill_handler
     }
 };
 
-using read_argument = std::vector<char>;
+// read_argument: 用於蒐集同一次 read() 呼叫的參數與緩衝區內容
+// 在同一個 eBPF 程式中，sys_exit_read 會先送出回傳值 (buffer 大小)
+// 接著 sys_enter_read 再負責將實際讀取的內容填入 buffer
+struct read_argument
+{
+    long ret;
+    int fd;
+    __u16 i_mode;
+    struct path path;
+    std::vector<char> buffer;
+
+    template<typename Char>
+    auto println(__u32 tgid, __u32 pid, int cpu, std::basic_string_view<Char> path_name)
+    {     
+        std::string_view mode;
+        std::string permission(10, '-');
+
+        // 判斷檔案類型，並設定 permission[0]
+        if      (S_ISREG (i_mode)) { mode = "regular file";     permission[0] = '-'; }
+        else if (S_ISDIR (i_mode)) { mode = "directory";        permission[0] = 'd'; }
+        else if (S_ISCHR (i_mode)) { mode = "character device"; permission[0] = 'c'; }
+        else if (S_ISBLK (i_mode)) { mode = "block device";     permission[0] = 'b'; }
+        else if (S_ISFIFO(i_mode)) { mode = "FIFO/pipe";        permission[0] = 'p'; }
+        else if (S_ISLNK (i_mode)) { mode = "symbolic link";    permission[0] = 'l'; }
+        else if (S_ISSOCK(i_mode)) { mode = "socket";           permission[0] = 's'; }
+        else                       { mode = "unknown";          permission[0] = '?'; }
+
+        // 設定 rwx 權限
+        if (S_IRUSR & i_mode) permission[1] = 'r';
+        if (S_IWUSR & i_mode) permission[2] = 'w';
+        if (S_IXUSR & i_mode) permission[3] = 'x';
+        if (S_IRGRP & i_mode) permission[4] = 'r';
+        if (S_IWGRP & i_mode) permission[5] = 'w';
+        if (S_IXGRP & i_mode) permission[6] = 'x';
+        if (S_IROTH & i_mode) permission[7] = 'r';
+        if (S_IWOTH & i_mode) permission[8] = 'w';
+        if (S_IXOTH & i_mode) permission[9] = 'x';
+
+        // 特殊權限 (setuid/setgid/sticky bit)
+        if (S_ISUID & i_mode) permission[3] = (i_mode & S_IXUSR) ? 's' : 'S';
+        if (S_ISGID & i_mode) permission[6] = (i_mode & S_IXGRP) ? 's' : 'S';
+        if (S_ISVTX & i_mode) permission[9] = (i_mode & S_IXOTH) ? 't' : 'T';
+
+        std::println("pid: {:>6}, tid: {:>6}, read,    ret: {:>5}, fd: {:>3}, {} ({}), name: \"{}\"",
+                     tgid, pid, ret, fd, permission, mode, path_name);
+
+        // 若有讀取到資料，並且不是 ELF 檔，則輸出文字內容
+        if (std::size(buffer))
+        {
+            constexpr std::string_view magic{"\177ELF"};
+
+            if (std::end(magic) != std::ranges::mismatch(buffer, magic).in2)
+                std::println("{}", std::string_view{std::begin(buffer), std::end(buffer)});
+        }
+    }
+};
 
 struct sys_enter_read_handler
 {
     std::unordered_map<__u64, read_argument>& map_;
+    const std::unordered_map<path, std::string, path_hash>& names_map_;
 
     void operator()(int cpu, void *data, __u32 size)
     {
         auto event = static_cast<sys_enter_read_event*>(data);
 
-        auto& content = map_[event->pid_tgid];
-
-        // 仍未傳送完整的 content
-        if (std::end(content) != std::copy_n(event->buf, event->size, std::begin(content) + event->index))
+        // 根據 ktime 找到對應的 read_argument
+        auto iterator = map_.find(event->ktime);
+        if  (iterator == std::end(map_))
+        {
+            // sys_exit_read 與 sys_enter_read 在相同的 eBPF 程式中，
+            // 理論上不應該有 out-of-order 的情況
+            std::println("warning: read_argument not found for ktime {}", event->ktime);
             return;
+        }
 
-        constexpr std::string_view magic{"\177ELF"};
+        auto& argument = iterator->second;
+        auto  buffer_begin = std::begin(argument.buffer) + event->index;
+        auto  buffer_end   = std::end  (argument.buffer);
 
-        // 檢查是否為 ELF 檔，如果非 ELF 則輸出內容
-        if (std::end(magic) != std::ranges::mismatch(content, magic).in2)
-            std::println("{}", std::string_view{std::begin(content), std::end(content)});
+        // 將本次讀取的資料片段複製到 buffer
+        // 如果 copy_n 回傳 buffer_end，代表已經接收完整 content
+        if (buffer_end == std::copy_n(event->buf, event->size, buffer_begin))
+        {
+            // path_event 可能尚未到達，導致 names_map_ 查不到路徑名稱
+            auto find_path = names_map_.find(argument.path);
+            auto path_name = find_path == std::end(names_map_) ? std::string_view{"not find path"}
+                                                               : std::string_view{find_path->second};
+
+            argument.println(event->tgid, event->pid, cpu, path_name);
+            map_.erase(iterator);
+        }
     }
 };
 
@@ -348,49 +419,34 @@ struct sys_exit_read_handler
     {
         auto event = static_cast<sys_exit_read_event*>(data);
 
-        std::string_view mode;
-        std::string permission(10, '-');
-
-        if      (S_ISREG (event->i_mode)) { mode = "regular file";     permission[0] = '-'; }
-        else if (S_ISDIR (event->i_mode)) { mode = "directory";        permission[0] = 'd'; }
-        else if (S_ISCHR (event->i_mode)) { mode = "character device"; permission[0] = 'c'; }
-        else if (S_ISBLK (event->i_mode)) { mode = "block device";     permission[0] = 'b'; }
-        else if (S_ISFIFO(event->i_mode)) { mode = "FIFO/pipe";        permission[0] = 'p'; }
-        else if (S_ISLNK (event->i_mode)) { mode = "symbolic link";    permission[0] = 'l'; }
-        else if (S_ISSOCK(event->i_mode)) { mode = "socket";           permission[0] = 's'; }
-        else                              { mode = "unknown";          permission[0] = '?'; }
-
-        if (S_IRUSR & event->i_mode) permission[1] = 'r';
-        if (S_IWUSR & event->i_mode) permission[2] = 'w';
-        if (S_IXUSR & event->i_mode) permission[3] = 'x';
-        if (S_IRGRP & event->i_mode) permission[4] = 'r';
-        if (S_IWGRP & event->i_mode) permission[5] = 'w';
-        if (S_IXGRP & event->i_mode) permission[6] = 'x';
-        if (S_IROTH & event->i_mode) permission[7] = 'r';
-        if (S_IWOTH & event->i_mode) permission[8] = 'w';
-        if (S_IXOTH & event->i_mode) permission[9] = 'x';
-
-        if (S_ISUID & event->i_mode) permission[3] = (event->i_mode & S_IXUSR) ? 's' : 'S';
-        if (S_ISGID & event->i_mode) permission[6] = (event->i_mode & S_IXGRP) ? 's' : 'S';
-        if (S_ISVTX & event->i_mode) permission[9] = (event->i_mode & S_IXOTH) ? 't' : 'T';
-
-        // event 可能 out-of-order 到達，若 path_event 尚未抵達，則找不到 path name
-        auto find_path = names_map_.find(event->path);
-        auto path_name = find_path == std::end(names_map_) ? std::string_view{"not find path"}
-                                                           : std::string_view{find_path->second};
-
-        std::println("pid: {:>6}, tid: {:>6}, read,    ret: {:>5}, fd: {:>3}, {} ({}), name: \"{}\"",
-            event->tgid, // pid
-            event->pid,  // tid
-            event->ret,
-            event->fd,
-            permission,
-            mode,
-            path_name);
-
-        if (event->ret >= 0)
+        // 以 ktime 作為 key 建立新的 read_argument
+        auto [iterator, inserted] = map_.try_emplace(event->ktime, event->ret,
+                                                                   event->fd,
+                                                                   event->i_mode,
+                                                                   event->path);
+        if (!inserted)
         {
-            map_[event->pid_tgid].resize(event->ret);
+            // ktime 重複的情況理論上不應該發生
+            std::println("warning: failed to insert read_argument for ktime {}", event->ktime);
+            return;
+        }
+
+        auto& argument = iterator->second;
+
+        // 根據回傳值調整 buffer 大小；若 ret <= 0，立刻輸出並移除
+        if (event->ret > 0)
+        {
+            argument.buffer.resize(event->ret);
+        }
+        else
+        {
+            // event 可能 out-of-order 到達，若 path_event 尚未抵達，則找不到 path name
+            auto find_path = names_map_.find(event->path);
+            auto path_name = find_path == std::end(names_map_) ? std::string_view{"not find path"}
+                                                               : std::string_view{find_path->second};
+
+            argument.println(event->tgid, event->pid, cpu, path_name);
+            map_.erase(iterator);
         }
     }
 };
@@ -950,7 +1006,7 @@ int main(int argc, char *argv[])
     handler[EVENT_ID(sys_exit_execve_event)]    = sys_exit_execve_handler{execve_map};
     handler[EVENT_ID(sys_enter_kill_event)]     = sys_enter_kill_handler{kill_map};
     handler[EVENT_ID(sys_exit_kill_event)]      = sys_exit_kill_handler{kill_map};
-    handler[EVENT_ID(sys_enter_read_event)]     = sys_enter_read_handler{read_map};
+    handler[EVENT_ID(sys_enter_read_event)]     = sys_enter_read_handler{read_map, names_map};
     handler[EVENT_ID(sys_exit_read_event)]      = sys_exit_read_handler{read_map, names_map};
     handler[EVENT_ID(path_event)]               = path_handler{names_map, skeleton->maps.path_map};
     handler[EVENT_ID(vm_area_event)]            = vm_area_handler{vm_area_map, names_map};
@@ -975,7 +1031,7 @@ int main(int argc, char *argv[])
     if (!perf_buffer_ptr)
         throw std::system_error{-errno, std::system_category(), "Failed to create perf buffer"};
 
-    bool attach_read = false;
+    bool attach_read = true;
     bpf_program__set_autoattach(skeleton->progs.tracepoint__syscalls__sys_enter_read, attach_read);
     bpf_program__set_autoattach(skeleton->progs.tracepoint__syscalls__sys_exit_read,  attach_read);
 
