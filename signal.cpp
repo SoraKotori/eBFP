@@ -506,13 +506,14 @@ struct vm_area_comp
                     const vm_area_event::vm_area& right) const
     {
         return left.vm_start < right.vm_start;
-    };
+    }
 };
 
 class vm_area_handler
 {
     std::unordered_map<__u64, std::set<vm_area_event::vm_area, vm_area_comp>>& vm_area_map_;
-    bool print_area;
+    bool print_event_;
+    bool print_area_;
 
     // 若能得知 cpu 數量，可以改用 std::array
     std::unordered_map<int, __u64> ktime_map_;
@@ -520,10 +521,12 @@ class vm_area_handler
 public:
     template<typename... ktime_Args>
     vm_area_handler(decltype(vm_area_map_) vm_area_map,
-                    decltype(print_area)   print_area,
-                    ktime_Args&&... ktime_args) :
+                    decltype(print_event_) print_event,
+                    decltype(print_area_)  print_area,
+                    ktime_Args&&...        ktime_args) :
         vm_area_map_(vm_area_map),
-        print_area(print_area),
+        print_event_(print_area),
+        print_area_(print_area),
         ktime_map_(std::forward<ktime_Args>(ktime_args)...)
     {}
 
@@ -545,35 +548,32 @@ public:
             areas.clear();
         }
 
-        for (auto& area : std::span{event->area, event->area_size})
-            areas.emplace_hint(std::end(areas), area);
+        auto hint = std::end(areas);
+        for (const auto& area : std::span{event->area, event->area_size})
+             hint = areas.emplace_hint(hint, area);
 
         // 在 vm_area 掃描中，記憶體區段會被分成多次 event 傳送：
         //  - 當前傳送的大小（area_size）等於 MAX_AREA 時，表示還有後續區段未傳送。
         //  - 當 area_size < MAX_AREA 時，表示最後一個區段已送達，整批 vm_area 才算完整。
-        // 使用 print_area 這個布林值，選擇是否要在最後一個 event 收到時輸出整批區段資訊。
-        if (print_area && event->area_size != MAX_AREA)
-        {
-            // 可考慮把這段 std::println 的呼叫移到 vm_area_argument 內處理。
+        if (event->area_size == MAX_AREA)
+            return;
+
+        // 可考慮把這兩段 std::println 的呼叫移到 vm_area_argument 內處理。
+        if (print_event_)
             std::println("pid: {:>6}, tid: {:>6}, vm_area, cpu: {}, size: {}",
                          event->tgid,
                          event->pid,
                          cpu,
-                         areas.size());
+                         std::size(areas));
 
-            // for (const auto& entry : areas)
-            // {
-            //     auto find = names_map_.find(entry.path);
-
-            //     std::println("    {:#014x} {:#014x} {:#010x} {:p} {:p} name: {}",
-            //     entry.vm_start,
-            //     entry.vm_end,
-            //     entry.vm_pgoff * 4096,
-            //     entry.path.dentry,
-            //     entry.path.mnt,
-            //     find == std::end(names_map_) ? std::string_view{} : find->second);
-            // }
-        }
+        if (print_area_)
+            for (const auto& entry : areas)
+                std::println("    start: {:#x}, end: {:#x}, pgoff: {:#x}, mnt: {:p}, dentry: {:p}",
+                             entry.vm_start,
+                             entry.vm_end,
+                             entry.vm_pgoff * 4096,
+                             entry.path.mnt,
+                             entry.path.dentry);
     }
 };
 
@@ -747,7 +747,8 @@ public:
                 continue;
             }
 
-            auto elf_off = addr - find_area->vm_start + find_area->vm_pgoff * 4096;
+            auto elf_off = addr - find_area->vm_start
+                                + find_area->vm_pgoff * 4096;
 
             if (find_area->path == path{})
             {
@@ -1023,7 +1024,7 @@ int main(int argc, char *argv[])
     handler[EVENT_ID(sys_enter_read_event)]     = sys_enter_read_handler{read_map, names_map};
     handler[EVENT_ID(sys_exit_read_event)]      = sys_exit_read_handler{read_map, names_map};
     handler[EVENT_ID(path_event)]               = path_handler{names_map};
-    handler[EVENT_ID(vm_area_event)]            = vm_area_handler{vm_area_map, true, 32};
+    handler[EVENT_ID(vm_area_event)]            = vm_area_handler{vm_area_map, true, true, 32};
     handler[EVENT_ID(stack_event)]              = stack_handler{normalizer.get(), symbolizer.get(), vm_area_map, names_map, skeleton->maps.path_map};
     handler[EVENT_ID(sched_process_exit_event)] = handle_sched_process_exit;
     handler[EVENT_ID(do_coredump_event)]        = do_coredump_handler{};
