@@ -140,11 +140,18 @@ public:
     auto insert_or_assign(Key&& key, Mapped&& obj)
     {
         auto pair = map_.insert_or_assign(std::forward<Key>(key), std::forward<Mapped>(obj));
-        if (!pair.second)
+        if (!pair.second) // pair.bool
             return pair;
 
-        if (auto node = coroutines_.extract(std::forward<Key>(key)))
-            node.mapped().resume(); // handle.resume()
+        auto iteraotr  = coroutines_.find(std::forward<Key>(key));
+        if  (iteraotr != coroutines_.end())
+        {
+            // 先 move 出來再 erase，避免 resume() 插入新元素時 invalid iterator
+            auto handle = std::move(iteraotr->second);
+
+            coroutines_.erase(iteraotr);
+            handle.resume();
+        }
 
         return pair;
     }
@@ -156,8 +163,15 @@ public:
         if (!pair.second) // pair.bool
             return pair;
 
-        if (auto node = coroutines_.extract(std::forward<Key>(key)))
-            node.mapped().resume(); // handle.resume()
+        auto iteraotr  = coroutines_.find(std::forward<Key>(key));
+        if  (iteraotr != coroutines_.end())
+        {
+            // 先 move 出來再 erase，避免 resume() 插入新元素時 invalid iterator
+            auto handle = std::move(iteraotr->second);
+
+            coroutines_.erase(iteraotr);
+            handle.resume();
+        }
 
         return pair;
     }
@@ -171,8 +185,8 @@ public:
     template<typename Key>
     auto async_find(const Key& key)
     {
-        auto map_it = map_.find(key);
-        if  (map_it == std::end(map_))
+        auto map_it =  map_.find(key);
+        if  (map_it == map_.end())
             return map_awaiter<Key>{std::in_place_type<await_key<Key>>, map_, coroutines_, key};
         else
             return map_awaiter<Key>{map_it};

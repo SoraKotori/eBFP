@@ -1,9 +1,11 @@
 #include "waitable_map.hpp"
 
 #include <thread>
+#include <map>
 #include <unordered_map>
+#include <flat_map>
 
-Task<promise> coroutine(int i, waitable_map<std::unordered_map, int, int>& map)
+Task<promise> coroutine(int i, waitable_map<std::flat_map, int, int>& map)
 {
     auto iterator = co_await map.async_find(10);
     std::println("coroutine: {}, find string: {}", i, iterator->second);
@@ -16,7 +18,7 @@ Task<promise> coroutine(int i, waitable_map<std::unordered_map, int, int>& map)
 
 int main()
 {
-    waitable_map<std::unordered_map, int, int> map;
+    waitable_map<std::flat_map, int, int> map;
 
     auto task1 = coroutine(1, map);
     auto task2 = coroutine(2, map);
