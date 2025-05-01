@@ -172,6 +172,11 @@ public:
             return map_awaiter<Key>{map_it};
     }
 
+    auto end() noexcept
+    {
+        return map_.end();
+    }
+
 private:
     map_container_type map_;
     coroutine_container_type coroutines_;

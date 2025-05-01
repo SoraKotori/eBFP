@@ -458,17 +458,9 @@ struct sys_exit_read_handler
     }
 };
 
-class path_handler
+struct path_handler
 {
     std::unordered_map<path, std::string, path_hash>& names_map_;
-    bpf_map *path_map_;
-
-public:
-    path_handler(decltype(names_map_) names_map,
-                 decltype(path_map_)  path_map) :
-        names_map_{names_map},
-        path_map_{path_map}
-    {}
 
     void operator()(int cpu, void *data, __u32 size)
     {
@@ -510,7 +502,8 @@ public:
 
 struct vm_area_comp
 {
-    auto operator()(const vm_area_event::vm_area& left, const vm_area_event::vm_area& right) const
+    auto operator()(const vm_area_event::vm_area& left,
+                    const vm_area_event::vm_area& right) const
     {
         return left.vm_start < right.vm_start;
     };
@@ -519,13 +512,19 @@ struct vm_area_comp
 class vm_area_handler
 {
     std::unordered_map<__u64, std::set<vm_area_event::vm_area, vm_area_comp>>& vm_area_map_;
-    std::unordered_map<path,  std::string, path_hash>& names_map_;
+    bool print_area;
+
+    // 若能得知 cpu 數量，可以改用 std::array
     std::unordered_map<int, __u64> ktime_map_;
 
 public:
-    vm_area_handler(decltype(vm_area_map_) vm_area_map, decltype(names_map_) names_map) :
-        vm_area_map_{vm_area_map},
-        names_map_{names_map}
+    template<typename... ktime_Args>
+    vm_area_handler(decltype(vm_area_map_) vm_area_map,
+                    decltype(print_area)   print_area,
+                    ktime_Args&&... ktime_args) :
+        vm_area_map_(vm_area_map),
+        print_area(print_area),
+        ktime_map_(std::forward<ktime_Args>(ktime_args)...)
     {}
 
     void operator()(int cpu, void *data, __u32 size)
@@ -534,25 +533,33 @@ public:
 
         auto& areas = vm_area_map_[event->pid_tgid];
 
-        if (auto& ktime = ktime_map_[cpu];
-            ktime != event->ktime)
+        // 同一 pid_tgid 可能連續收到多個 vm_area_event
+        // 透過 cpu 與 ktime 判斷是否屬於同一批次：
+        //  - ktime 與 cpu 均相同：同一批次，繼續累積
+        //  - ktime 或 cpu 不同：視為新批次，需重置資料
+        //
+        // 由於不同 CPU 的 ktime 幾乎不會重複，故可用 cpu 代替 pid_tgid 比對對應的 ktime
+        if (ktime_map_[cpu] != event->ktime)
         {
-            ktime  = event->ktime;
+            ktime_map_[cpu]  = event->ktime;
             areas.clear();
         }
 
         for (auto& area : std::span{event->area, event->area_size})
-        {
             areas.emplace_hint(std::end(areas), area);
-        }
 
-        if (event->area_size != MAX_AREA)
+        // 在 vm_area 掃描中，記憶體區段會被分成多次 event 傳送：
+        //  - 當前傳送的大小（area_size）等於 MAX_AREA 時，表示還有後續區段未傳送。
+        //  - 當 area_size < MAX_AREA 時，表示最後一個區段已送達，整批 vm_area 才算完整。
+        // 使用 print_area 這個布林值，選擇是否要在最後一個 event 收到時輸出整批區段資訊。
+        if (print_area && event->area_size != MAX_AREA)
         {
+            // 可考慮把這段 std::println 的呼叫移到 vm_area_argument 內處理。
             std::println("pid: {:>6}, tid: {:>6}, vm_area, cpu: {}, size: {}",
-                event->tgid,
-                event->pid,
-                cpu,
-                areas.size());
+                         event->tgid,
+                         event->pid,
+                         cpu,
+                         areas.size());
 
             // for (const auto& entry : areas)
             // {
@@ -930,7 +937,7 @@ int main(int argc, char *argv[])
         throw std::system_error{-error, std::system_category()};
 
     // update read_content flag to bpf map
-    __u32 context = true;
+    __u32 context = false;
     if ((error = bpf_map__update_elem(skeleton->maps.read_content,
                                       &zero, sizeof(zero),
                                       &context, sizeof(context), BPF_ANY)) < 0)
@@ -1015,8 +1022,8 @@ int main(int argc, char *argv[])
     handler[EVENT_ID(sys_exit_kill_event)]      = sys_exit_kill_handler{kill_map};
     handler[EVENT_ID(sys_enter_read_event)]     = sys_enter_read_handler{read_map, names_map};
     handler[EVENT_ID(sys_exit_read_event)]      = sys_exit_read_handler{read_map, names_map};
-    handler[EVENT_ID(path_event)]               = path_handler{names_map, skeleton->maps.path_map};
-    handler[EVENT_ID(vm_area_event)]            = vm_area_handler{vm_area_map, names_map};
+    handler[EVENT_ID(path_event)]               = path_handler{names_map};
+    handler[EVENT_ID(vm_area_event)]            = vm_area_handler{vm_area_map, true, 32};
     handler[EVENT_ID(stack_event)]              = stack_handler{normalizer.get(), symbolizer.get(), vm_area_map, names_map, skeleton->maps.path_map};
     handler[EVENT_ID(sched_process_exit_event)] = handle_sched_process_exit;
     handler[EVENT_ID(do_coredump_event)]        = do_coredump_handler{};
