@@ -515,7 +515,7 @@ class vm_area_handler
     bool print_event_;
     bool print_area_;
 
-    // 若能得知 cpu 數量，可以改用 std::array
+    // 若能得知 cpu 數量，可以改用 std::vector
     std::unordered_map<int, __u64> ktime_map_;
 
 public:
@@ -598,18 +598,16 @@ void handle_sched_process_exit(int cpu, void *data, __u32 size)
             WCOREDUMP(status) ? ", (core dumped)" : ""); // 判斷是否發生 Core Dump
 }
 
-class do_coredump_handler
+struct do_coredump_handler
 {
-public:
     void operator()(int cpu, void *data, __u32 size)
     {
         auto event = static_cast<do_coredump_event*>(data);
     }
 };
 
-class sys_exit_handler
+struct sys_exit_handler
 {
-public:
     void operator()(int cpu, void *data, __u32 size) const
     {
         auto event = static_cast<sys_exit_event*>(data);
@@ -643,15 +641,11 @@ public:
 #define MAP_FIXED   0x10 /* Interpret addr exactly.  */
 #endif
 
-class do_mmap_handler
+struct do_mmap_handler
 {
     std::unordered_map<__u64, std::set<vm_area_event::vm_area, vm_area_comp>>& vm_area_map_;
 
-public:
-    do_mmap_handler(decltype(vm_area_map_) vm_area_map) :
-        vm_area_map_{vm_area_map}
-    {}
-
+    // 需要考慮 do_mmap_event 未到達時，後面的 event 已經在查詢 vm_area_map_ 的問題
     void operator()(int cpu, void *data, __u32 size)
     {
         auto event = static_cast<do_mmap_event*>(data);
@@ -693,7 +687,7 @@ public:
     }
 };
 
-class stack_handler
+struct stack_handler
 {
     blaze_normalizer* normalizer_;
     blaze_symbolizer* symbolizer_;
@@ -701,21 +695,9 @@ class stack_handler
     const std::unordered_map<path,  std::string, path_hash>& names_map_;
     bpf_map *path_map_;
 
-public:
-    stack_handler(blaze_normalizer* normalizer,
-                  blaze_symbolizer* symbolizer,
-                  decltype(vm_area_map_) vm_area_map,
-                  decltype(names_map_) names_map,
-                  bpf_map *path_map) :
-        normalizer_{normalizer},
-        symbolizer_{symbolizer},
-        vm_area_map_{vm_area_map},
-        names_map_{names_map},
-        path_map_{path_map}
-    {}
-
     void operator()(int cpu, void *data, __u32 size)
     {
+        // 若要改成 coroutine 則要複製 event
         auto event = static_cast<stack_event*>(data);
 
         const auto& areas = vm_area_map_.at(event->pid_tgid);
@@ -1024,7 +1006,7 @@ int main(int argc, char *argv[])
     handler[EVENT_ID(sys_enter_read_event)]     = sys_enter_read_handler{read_map, names_map};
     handler[EVENT_ID(sys_exit_read_event)]      = sys_exit_read_handler{read_map, names_map};
     handler[EVENT_ID(path_event)]               = path_handler{names_map};
-    handler[EVENT_ID(vm_area_event)]            = vm_area_handler{vm_area_map, true, true, 32};
+    handler[EVENT_ID(vm_area_event)]            = vm_area_handler{vm_area_map, false, false, 32};
     handler[EVENT_ID(stack_event)]              = stack_handler{normalizer.get(), symbolizer.get(), vm_area_map, names_map, skeleton->maps.path_map};
     handler[EVENT_ID(sched_process_exit_event)] = handle_sched_process_exit;
     handler[EVENT_ID(do_coredump_event)]        = do_coredump_handler{};

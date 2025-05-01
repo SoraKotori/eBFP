@@ -18,30 +18,36 @@ struct promise
 
     struct final_awaiter
     {
-        auto await_ready() noexcept { return false; }
+        // awaiter instance 本身會被存放在 coroutine frame 中
+        coroutine_handle_type resume_handle;
+
+        auto await_ready() noexcept
+        {
+            // 如果沒有指定 resume_handle，則可以直接結束，不 suspend
+            return !resume_handle;
+        }
 
         template<typename Promise>
-        auto await_suspend(std::coroutine_handle<Promise> handle) noexcept -> std::coroutine_handle<>
+        auto await_suspend(std::coroutine_handle<Promise> handle) noexcept
         {
+            // 在呼叫 destroy() 之前，先將要回傳的 handle 複製到 stack 上的 local 變數
+            // 避免下面 destroy() 釋放 coroutine frame 後，再去讀取已被釋放的記憶體，引發 UAF
+            auto local_handle = resume_handle;
+
+            // destroy() 可能會因為 promise_type 的 destructor 拋出 exception，
+            // 並且因為 final_suspend 要求 noexcept，所以需要 try-catch 以避免直接觸發 std::terminate()
+            // 或考慮將 destroy() 移動到外部處理
             try
             {
-                // .promise() 並未標記為 noexcept，可能因為無效的 handle 拋出 exception
-                auto resume_handle = handle.promise().resume_handle;
-
-                // .destroy() 可能會因為 promise_type 的 destructor 拋出例外，
-                // 並且因為 final_suspend 要求 noexcept，所以需要 try-catch 以避免直接觸發 std::terminate()
-                // 或考慮將 .destroy() 移動到外部處理
+                // 釋放整個 coroutine frame（包含 promise, local coroutine 變數，還有 final_awaiter 本身)
                 handle.destroy();
-
-                if (resume_handle)
-                    return resume_handle;
             }
             catch(const std::exception& exception)
             {
-                std::println("{}", exception.what());
+                std::println("final destroy exception: {}", exception.what());
             }
 
-            return std::noop_coroutine();
+            return local_handle;
         }
 
         auto await_resume() noexcept {}
@@ -60,8 +66,8 @@ struct promise
     // coroutine 的要求中規範 final_suspend 需要 noexcept
     auto final_suspend() noexcept
     {
-        // 若不回傳 std::suspend_never，則需要手動呼叫 .destroy()
-        return final_awaiter{};
+        // 若需要 suspend，則需要手動呼叫 destroy()
+        return final_awaiter{resume_handle};
     }
 
     auto return_void() {}
