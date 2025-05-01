@@ -4,6 +4,9 @@
 #define MAX_NAME_LEN 64
 #define MAX_SYSCALL 8 // 512 divide 64
 #define MAX_AREA 128
+#define MAX_ARGV_UNROLL 256 // 256 會發生截斷
+#define MAX_READ_UNROLL 16  // 32  會發生截斷
+#define MAX_PATH_UNROLL 32
 
 #ifndef PERF_MAX_STACK_DEPTH
 #define PERF_MAX_STACK_DEPTH 127

@@ -213,12 +213,10 @@ struct execve_argument
     auto println(__u32 tgid, __u32 pid, int cpu)
     {
         std::println("pid: {:>6}, tid: {:>6}, execve, cpu: {}, ret: {:>5}, argc: {}, argv: {}",
-            tgid,
-            pid,
-            cpu,
-            ret.value(),
-            argc.value(),
-            argv);
+                     tgid, pid, cpu, ret.value(), argc.value(), argv);
+        
+        if (argc.value() == MAX_ARGV_UNROLL)
+            std::println("warning: execve argv count reached limit ({}), possible truncation", MAX_ARGV_UNROLL);
     }
 };
 
@@ -326,6 +324,9 @@ struct read_argument
     struct path path;
     std::vector<char> buffer;
 
+    // 定義最大長度，eBPF 最大可傳送的大小
+    static constexpr long max_size = MAX_READ_UNROLL * MAX_ARG_LEN;
+
     template<typename Char>
     auto println(__u32 tgid, __u32 pid, int cpu, std::basic_string_view<Char> path_name)
     {     
@@ -361,8 +362,13 @@ struct read_argument
         std::println("pid: {:>6}, tid: {:>6}, read,    ret: {:>5}, fd: {:>3}, {} ({}), name: \"{}\"",
                      tgid, pid, ret, fd, permission, mode, path_name);
 
+        // 如果 read size 超出上限，就截斷並印出警告
+        if (ret > max_size)
+            std::println("warning: read size {} exceeds limit {}, truncating to {}",
+                         ret, max_size, max_size);
+
         // 若有讀取到資料，並且不是 ELF 檔，則輸出文字內容
-        if (std::size(buffer))
+        if (ret > 0)
         {
             constexpr std::string_view magic{"\177ELF"};
 
@@ -433,10 +439,11 @@ struct sys_exit_read_handler
 
         auto& argument = iterator->second;
 
-        // 根據回傳值調整 buffer 大小；若 ret <= 0，立刻輸出並移除
+        // 根據回傳值調整 buffer 大小; 若 ret <= 0，立刻輸出並移除
         if (event->ret > 0)
         {
-            argument.buffer.resize(event->ret);
+            // 如果 event->ret 超出上限，就截斷
+            argument.buffer.resize(std::min(event->ret, argument.max_size));
         }
         else
         {

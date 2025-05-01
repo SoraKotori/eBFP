@@ -7,7 +7,6 @@
 
 #include "signal.h"
 
-#define MAX_ARGS 32
 #define MAX_ENTRIES 1024
 
 struct {
@@ -37,13 +36,6 @@ struct {
     __type(key, u32);
     __type(value, char[MAX_ARG_LEN]);
 } command_pattern SEC(".maps");
-
-struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, MAX_ENTRIES);
-    __type(key, u64);
-    __type(value, u64);
-} execve_map SEC(".maps");
 
 struct {
     __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
@@ -139,56 +131,40 @@ struct EVENT_TYPE name =                  \
 #define PRINT_ERROR(error) \
     bpf_printk(__FILE__ ":" STR(__LINE__) ": error: %d: %s", error, __func__)
 
-#define CHECK_ERROR(expr)   \
-({                          \
-    long __err = (expr);    \
-    if  (__err < 0)         \
-    {                       \
-        PRINT_ERROR(__err); \
-        return 0;           \
-    }                       \
-    __err;                  \
+#define HANDLE_ERROR(expr, ret) \
+({                              \
+    long __err = (expr);        \
+    if  (__err < 0)             \
+    {                           \
+        PRINT_ERROR(__err);     \
+        return (ret);           \
+    }                           \
+    __err;                      \
 })
 
-#define RETURN_ERROR(expr)  \
-({                          \
-    long __err = (expr);    \
-    if  (__err < 0)         \
-    {                       \
-        PRINT_ERROR(__err); \
-        return __err;       \
-    }                       \
-    __err;                  \
-})
+#define  CHECK_ERROR(expr) HANDLE_ERROR(expr, 0)
+#define RETURN_ERROR(expr) HANDLE_ERROR(expr, __err)
 
 #define PRINT_NULL(expr) \
     bpf_printk(__FILE__ ":" STR(__LINE__) ": null pointer: " #expr ": %s", __func__); \
 
-// 注意：CHECK_NULL 僅應用於錯誤檢查。
+// 注意：HANDLE_NULL 僅應用於錯誤檢查。
 // 對於正常、可接受的退出情形，應直接撰寫：
 // if (!__ptr)
 //     return 0;
-#define CHECK_NULL(expr)         \
+#define HANDLE_NULL(expr, ret)   \
 ({                               \
     typeof(expr) __ptr = (expr); \
     if (!__ptr)                  \
     {                            \
         PRINT_NULL(expr);        \
-        return 0;                \
+        return (ret);            \
     }                            \
     __ptr;                       \
 })
 
-#define RETURN_NULL(expr)        \
-({                               \
-    typeof(expr) __ptr = (expr); \
-    if (!__ptr)                  \
-    {                            \
-        PRINT_NULL(expr);        \
-        return -2; /* ENOENT (No such file or directory) */ \
-    }                            \
-    __ptr;                       \
-})
+#define  CHECK_NULL(expr) HANDLE_NULL(expr, 0)
+#define RETURN_NULL(expr) HANDLE_NULL(expr, -2) // ENOENT (No such file or directory)
 
 #define CHECK_SIZE(size, expr) \
 ({                             \
@@ -218,7 +194,7 @@ long read_path(char dst[MAX_ARG_LEN], const struct path *path)
 #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 3, 0)
     #pragma unroll
 #endif
-    for (u32 i = 0; i < MAX_ARGS; i++)
+    for (u32 i = 0; i < MAX_PATH_UNROLL; i++)
     {
         if (dentry == mnt_root)
         {
@@ -248,13 +224,16 @@ long read_path(char dst[MAX_ARG_LEN], const struct path *path)
         u32 len;
         bpf_core_read(&len, sizeof(len), &dentry->d_name.len);
 
-        index -= len + 1;
+        if ((index -= len) <= MAX_ARG_LEN - MAX_NAME_LEN &&
+                      len  <=               MAX_NAME_LEN)
+            bpf_probe_read_kernel(dst + index, len, name);
+        else
+            return -7; // E2BIG (Argument list too long)
 
-        if (index > MAX_ARG_LEN - MAX_NAME_LEN)     return -7; // E2BIG (Argument list too long)
-        // if (len   >               MAX_NAME_LEN - 1) return -7; // E2BIG (Argument list too long)
-
-        dst[index] = '/';
-        bpf_probe_read_kernel(dst + index + 1, len & (MAX_NAME_LEN - 1), name);
+        if ((index -= 1) <= MAX_ARG_LEN - MAX_NAME_LEN)
+            dst[index] = '/';
+        else
+            return -7; // E2BIG
 
         dentry = d_parent;
     }
@@ -428,6 +407,8 @@ int pattern_strcmp(const char *const pattern, const char *const arg)
     if (pattern[0] == '\0')
         return 0;
 
+// TODO: 尚未做截斷保護，
+//       超過 MAX_ARG_LEN 元素可能導致比較無效
 #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 3, 0)
     #pragma unroll
 #endif
@@ -443,6 +424,13 @@ int pattern_strcmp(const char *const pattern, const char *const arg)
     }
     return 0;
 }
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, MAX_ENTRIES);
+    __type(key, u64);
+    __type(value, u64);
+} execve_map SEC(".maps");
 
 SEC("tracepoint/syscalls/sys_enter_execve")
 int tracepoint__syscalls__sys_enter_execve(struct trace_event_raw_sys_enter *ctx)
@@ -493,8 +481,8 @@ int tracepoint__syscalls__sys_enter_execve(struct trace_event_raw_sys_enter *ctx
 #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 3, 0)
     #pragma unroll
 #endif
-    // 逐一讀取參數，最多讀到 MAX_ARGS 為止
-    for (u32 i = 1; i < MAX_ARGS; i++) 
+    // 逐一讀取參數，最多讀到 MAX_ARGV_UNROLL 為止
+    for (u32 i = 1; i < MAX_ARGV_UNROLL; i++) 
     {
         // 從 user space 讀取 argv[i] 中的字串指標
         CHECK_ERROR(bpf_probe_read_user(&argv_i, sizeof(argv_i), argv + event.i));
@@ -736,7 +724,7 @@ int tracepoint__syscalls__sys_exit_read(struct trace_event_raw_sys_exit *ctx)
 #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 3, 0)
     #pragma unroll
 #endif
-    for (u32 i = 0; i < MAX_ARGS; i++)
+    for (u32 i = 0; i < MAX_READ_UNROLL; i++)
     {
         event.enter.index = i * MAX_ARG_LEN;
 
