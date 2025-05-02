@@ -6,7 +6,7 @@ RUN apt-get update && export DEBIAN_FRONTEND=noninteractive && \
 
 RUN apt-get update && export DEBIAN_FRONTEND=noninteractive && \
     apt-get -y install --no-install-recommends \
-    clang llvm libc++-dev libc++abi-dev
+    clang llvm libc++-dev
 
 # libbpf bpftool
 RUN apt-get update && export DEBIAN_FRONTEND=noninteractive && \
