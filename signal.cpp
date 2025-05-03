@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <span>
 #include <set>
+#include <chrono>
 
 #include <sys/wait.h>
 #include <sys/stat.h>
@@ -1042,12 +1043,24 @@ int main(int argc, char *argv[])
 
     std::println("Successfully started! Ctrl+C to stop.");
 
+    auto next_time = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
+    auto total_event = 0;
+
     // 進入 poll loop
     while (!g_signal_status)
     {
-        if ((error = perf_buffer__poll(perf_buffer_ptr.get(), 100 /* ms */)) < 0 &&
-             error != -EINTR)
-            throw std::system_error{-error, std::system_category(), "Error polling perf buffer"};
+        auto count = perf_buffer__poll(perf_buffer_ptr.get(), 100 /* ms */);
+        if  (count < 0 && count != -EINTR)
+            throw std::system_error{-count, std::system_category(), "Error polling perf buffer"};
+
+        total_event += count;
+
+        auto time = std::chrono::system_clock::now();
+        if  (time > next_time)
+        {
+            std::println("time: {}, total event: {}", time, total_event);
+            next_time += std::chrono::seconds{1};
+        }
     }
 
     std::println("Stopped. Exiting normally.");
