@@ -390,7 +390,7 @@ int stack_tailcall(struct bpf_raw_tracepoint_args *ctx)
 
     stack_event->base.event_id = EVENT_ID(stack_event);
     stack_event->pid_tgid      = vm_area_event->pid_tgid;
-    stack_event->ktime         = bpf_ktime_get_ns();
+    stack_event->ktime         = vm_area_event->ktime;
     stack_event->addr_size     = size / sizeof(*stack_event->addrs);
 
     CHECK_ERROR(bpf_perf_event_output(
@@ -827,17 +827,22 @@ int raw_tracepoint__sys_exit(struct bpf_raw_tracepoint_args *ctx)
     
     CHECK_SIZE(syscell_idx, MAX_SYSCALL - 1);
 
+    // 可以考慮再細分成是否要輸出 stack，用 4 個 map 來完成
+    // negative_ret_map positive_ret_map negative_stack_map positive_stack_map
     if (ret_map[syscell_idx] & syscell_bit)
     {
+        // 需要印出 stack 時，需要提供 ktime 讓 stack_event 能查詢到對應的資訊
+        event.ktime = bpf_ktime_get_ns();
+
         CHECK_ERROR(bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU,
                                           &event, sizeof(event)));
 
 
-
+        // 以下是 vm_area_event 的處理，沿用 sys_exit_event 的 pid_tgid 和 ktime
         struct vm_area_event *vm_area_event = CHECK_NULL(bpf_map_lookup_elem(&vm_area_buffer, &zero));
         vm_area_event->base.event_id = EVENT_ID(vm_area_event);
         vm_area_event->pid_tgid      = event.pid_tgid;
-        vm_area_event->ktime         = bpf_ktime_get_ns();
+        vm_area_event->ktime         = event.ktime;
 
         struct task_struct *task = (struct task_struct *)bpf_get_current_task();
 

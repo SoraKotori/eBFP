@@ -174,6 +174,7 @@ struct sys_exit_event
     struct event_base base;
 
     PID_TGID_UNION;
+    __u64 ktime;
     long syscall_nr;
     long ret;
 };

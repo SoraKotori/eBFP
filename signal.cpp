@@ -607,18 +607,34 @@ struct do_coredump_handler
     }
 };
 
+struct exit_argument
+{
+    int cpu;
+    long syscall_nr;
+    long ret;
+
+    static auto print(__u32 tgid, __u32 pid, int cpu, long ret, long syscall_nr)
+    {
+        std::println("pid: {:>6}, tid: {:>6}, syscall, cpu: {}, ret: {:>5}, number: {}",
+                     tgid, pid, cpu, ret, syscall_nr);
+    }
+};
+
 struct sys_exit_handler
 {
-    void operator()(int cpu, void *data, __u32 size) const
+    std::unordered_map<__u64, exit_argument>& map_;
+
+    void operator()(int cpu, void *data, __u32 size)
     {
         auto event = static_cast<sys_exit_event*>(data);
 
-        std::println("pid: {:>6}, tid: {:>6}, syscall, cpu: {}, ret: {:>5}, number: {}",
-            event->tgid,
-            event->pid,
-            cpu,
-            event->ret,
-            event->syscall_nr);
+        if (event->ktime == 0)
+            exit_argument::print(event->tgid, event->pid, cpu, event->ret, event->syscall_nr);
+
+        else if (map_.try_emplace(event->ktime, cpu,
+                                                event->syscall_nr,
+                                                event->ret).second == false)
+            std::println("warning: failed to insert exit_argument for ktime {}", event->ktime);
     }
 };
 
@@ -694,6 +710,7 @@ struct stack_handler
     blaze_symbolizer* symbolizer_;
     const std::unordered_map<__u64, std::set<vm_area_event::vm_area, vm_area_comp>>& vm_area_map_;
     const std::unordered_map<path,  std::string, path_hash>& names_map_;
+    std::unordered_map<__u64, exit_argument>& exit_map_;
     bpf_map *path_map_;
 
     void operator()(int cpu, void *data, __u32 size)
@@ -701,9 +718,15 @@ struct stack_handler
         // 若要改成 coroutine 則要複製 event
         auto event = static_cast<stack_event*>(data);
 
+        auto argument = exit_map_.extract(event->ktime);
+        exit_argument::print(event->tgid,
+                             event->pid,
+                             argument.mapped().cpu,
+                             argument.mapped().ret,
+                             argument.mapped().syscall_nr);
+
         const auto& areas = vm_area_map_.at(event->pid_tgid);
         const auto  addrs = std::span<unsigned long>{event->addrs, event->addr_size};
-        // print_stack_trace(normalizer_, symbolizer_, event->tgid, addrs);
 
         for (const auto& addr : addrs)
         {
@@ -998,6 +1021,7 @@ int main(int argc, char *argv[])
     std::unordered_map<__u64, read_argument> read_map;
     std::unordered_map<__u64, std::set<vm_area_event::vm_area, vm_area_comp>> vm_area_map;
     std::unordered_map<path,  std::string, path_hash> names_map;
+    std::unordered_map<__u64, exit_argument> exit_map;
 
     event_handler<EVENT_MAX> handler;
     handler[EVENT_ID(sys_enter_execve_event)]   = sys_enter_execve_handler{execve_map};
@@ -1008,10 +1032,10 @@ int main(int argc, char *argv[])
     handler[EVENT_ID(sys_exit_read_event)]      = sys_exit_read_handler{read_map, names_map};
     handler[EVENT_ID(path_event)]               = path_handler{names_map};
     handler[EVENT_ID(vm_area_event)]            = vm_area_handler{vm_area_map, false, false, 32};
-    handler[EVENT_ID(stack_event)]              = stack_handler{normalizer.get(), symbolizer.get(), vm_area_map, names_map, skeleton->maps.path_map};
+    handler[EVENT_ID(stack_event)]              = stack_handler{normalizer.get(), symbolizer.get(), vm_area_map, names_map, exit_map, skeleton->maps.path_map};
     handler[EVENT_ID(sched_process_exit_event)] = handle_sched_process_exit;
     handler[EVENT_ID(do_coredump_event)]        = do_coredump_handler{};
-    handler[EVENT_ID(sys_exit_event)]           = sys_exit_handler{};
+    handler[EVENT_ID(sys_exit_event)]           = sys_exit_handler{exit_map};
     handler[EVENT_ID(do_mmap_event)]            = do_mmap_handler{vm_area_map};
 
     // perf buffer 選項
