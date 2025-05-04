@@ -852,12 +852,15 @@ template<std::size_t number>
 class event_handler
 {
     std::array<std::function<void(int, void*, __u32)>, number> handlers_{};
+    std::size_t event_count_ = 0;
 
-    constexpr void handle_event(int cpu, void *data, __u32 size) const noexcept
+    constexpr void handle_event(int cpu, void *data, __u32 size) noexcept
     {
         auto event = static_cast<event_base*>(data);
         if (handlers_[event->event_id])
             handlers_[event->event_id](cpu, data, size);
+
+        event_count_++;
     }
 
 public:
@@ -874,6 +877,11 @@ public:
     constexpr const_reference operator[](size_type n) const noexcept
     {
         return handlers_[n];
+    }
+
+    constexpr auto event_count() const noexcept
+    {
+        return event_count_;
     }
 
     static constexpr void callback(void* ctx, int cpu, void* data, __u32 size) noexcept
@@ -1068,7 +1076,6 @@ int main(int argc, char *argv[])
     std::println("Successfully started! Ctrl+C to stop.");
 
     auto next_time = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
-    auto total_event = 0;
 
     // 進入 poll loop
     while (!g_signal_status)
@@ -1077,12 +1084,10 @@ int main(int argc, char *argv[])
         if  (count < 0 && count != -EINTR)
             throw std::system_error{-count, std::system_category(), "Error polling perf buffer"};
 
-        total_event += count;
-
         auto time = std::chrono::system_clock::now();
         if  (time > next_time)
         {
-            std::println("time: {}, total event: {}", time, total_event);
+            std::println("time: {}, handled event: {}", time, handler.event_count());
             next_time += std::chrono::seconds{1};
         }
     }

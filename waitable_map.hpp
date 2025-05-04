@@ -92,8 +92,9 @@ public:
     // coroutine container 插入元素後，原本的 iterators 和 references 可能會失效，
     // 因此無法保存在 map_awaiter 中，作為 await_resume 時所使用，解決方法:
     // 1. 保存 container 和 key，每次重新查詢
-    // 2. 改用 std::map 基於 node-based 的方法
-    // 3. 使用 boost::stable_vector 或 std::unique_ptr，確保 iterators 和 references 不會失效
+    // 2. 改用 std::map 基於 node-based 的方法，確保 iterators 和 references 不會失效
+    // 3. 改用 std::unordered_map，確保 references 不會失效 (https://eel.is/c++draft/unord.req#general-9)
+    // 4. 使用 boost::stable_vector 或 std::unique_ptr，確保 iterators 和 references 不會失效
     template<typename Key>
     struct await_key
     {
