@@ -104,7 +104,7 @@ public:
     };
 
     template<typename Key>
-    struct map_awaiter : std::variant<map_iterator, await_key<Key>>
+    struct find_awaiter : std::variant<map_iterator, await_key<Key>>
     {
         // 使用 base::constructor 來初始化 map_awaiter
         using std::variant<map_iterator, await_key<Key>>::variant;
@@ -188,9 +188,9 @@ public:
     {
         auto map_it =  map_.find(key);
         if  (map_it == map_.end())
-            return map_awaiter<Key>{std::in_place_type<await_key<Key>>, map_, coroutines_, key};
+            return find_awaiter<Key>{std::in_place_type<await_key<Key>>, map_, coroutines_, key};
         else
-            return map_awaiter<Key>{map_it};
+            return find_awaiter<Key>{map_it};
     }
 
     auto end() noexcept
