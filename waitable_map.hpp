@@ -74,6 +74,37 @@ struct promise
     auto unhandled_exception() {}
 };
 
+/**
+ * @brief 將當前 coroutine 加入等待鏈，並取得下一個要 resume 的 handle
+ *
+ * 這個 helper 函式會依序交換兩個 coroutine_handle：
+ *  1. 將 `waiting_handle` 換成當前的 `current_handle`，並取得原本的 waiting_handle  
+ *  2. 將 `resume_handle` 換成步驟1 取得的舊 waiting_handle，並取得原本的 resume_handle  
+ * 如果最終取得的舊 resume_handle 非空，代表有一個 coroutine 正在排隊等待被 resume，就回傳它；
+ * 否則回傳 std::noop_coroutine()，表示沒有要 resume 的 coroutine。
+ *
+ * @tparam Promise        coroutine 的 promise_type
+ * @param resume_handle   [in,out] 保存上一輪待 resume 的 handle，會被新的等待者取代
+ * @param waiting_handle  [in,out] 保存與 key 對應的等待 coroutine handle，會被 current_handle 取代
+ * @param current_handle  [in]     目前呼叫 await_suspend 的 coroutine handle (rvalue)
+ * @return std::coroutine_handle<> 下一個要 resume 的 coroutine handle，若無則為 noop
+ */
+template<typename Promise>
+std::coroutine_handle<> chain_and_resume(std::coroutine_handle<Promise>&   resume_handle,
+                                         std::coroutine_handle<Promise>&  waiting_handle,
+                                         std::coroutine_handle<Promise>&& current_handle) noexcept
+{
+    // resume_handle <- waiting_handle <- current_handle
+
+    if (auto   handle = std::exchange(resume_handle,
+                        std::exchange(waiting_handle,
+                        std::forward<std::coroutine_handle<Promise>>(current_handle))))
+        return handle;
+
+    // 如果沒有任何 coroutine 在排隊，回傳 noop_coroutine
+    return std::noop_coroutine();
+}
+
 template<template<typename...> typename MapContainer,
          typename ContainerKey,
          typename T,
@@ -87,7 +118,8 @@ public:
 
     // coroutine chain: coroutine3 -> coroutine2 -> coroutine1 -> nullptr
     using coroutine_container_type = MapContainer<ContainerKey, std::coroutine_handle<promise>, ContainerArgs...>;
-    using coroutine_key_type = typename coroutine_container_type::key_type;
+    using coroutine_key_type    = typename coroutine_container_type::key_type;
+    using coroutine_mapped_type = typename coroutine_container_type::mapped_type;
 
     // coroutine container 插入元素後，原本的 iterators 和 references 可能會失效，
     // 因此無法保存在 map_awaiter 中，作為 await_resume 時所使用，解決方法:
@@ -98,8 +130,9 @@ public:
     template<typename Key>
     struct await_key
     {
+        coroutine_mapped_type& waiting_handle;
+
         const map_container_type& map;
-        coroutine_container_type& coroutines;
         const Key& key;
     };
 
@@ -115,18 +148,12 @@ public:
         }
 
         template<typename Promise>
-        auto await_suspend(std::coroutine_handle<Promise> current_handle) -> std::coroutine_handle<>
+        auto await_suspend(std::coroutine_handle<Promise> current_handle)
         {
-            auto [_, coroutines, key] = std::get<await_key<Key>>(*this);
-
             auto&  resume_handle = current_handle.promise().resume_handle;
-            auto& waiting_handle = coroutines[key];
+            auto& waiting_handle = std::get<await_key<Key>>(*this).waiting_handle;
 
-            // resume_handle <- waiting_handle <- current_handle
-            if (auto handle = std::exchange(resume_handle, std::exchange(waiting_handle, current_handle)))
-                return handle;
-            else
-                return std::noop_coroutine();
+            return chain_and_resume(resume_handle, waiting_handle, std::move(current_handle));
         }
 
         auto await_resume() const
@@ -135,6 +162,23 @@ public:
                 std::get<map_iterator>(*this) :
                 std::get<await_key<Key>>(*this).map.find(std::get<await_key<Key>>(*this).key);
         }
+    };
+
+    struct key_awaiter
+    {
+        coroutine_mapped_type& waiting_handle;
+
+        auto await_ready() const { return false; }
+
+        template<typename Promise>
+        auto await_suspend(std::coroutine_handle<Promise> current_handle)
+        {
+            auto& resume_handle = current_handle.promise().resume_handle;
+
+            return chain_and_resume(resume_handle, waiting_handle, std::move(current_handle));
+        }
+
+        auto await_resume() const {}
     };
 
     template<typename Key, typename Mapped>
@@ -188,9 +232,15 @@ public:
     {
         auto map_it =  map_.find(key);
         if  (map_it == map_.end())
-            return find_awaiter<Key>{std::in_place_type<await_key<Key>>, map_, coroutines_, key};
+            return find_awaiter<Key>{std::in_place_type<await_key<Key>>, coroutines_[key], map_, key};
         else
             return find_awaiter<Key>{map_it};
+    }
+
+    template<typename Key>
+    auto wait(const Key& key)
+    {
+        return key_awaiter{coroutines_[key]};
     }
 
     auto end() noexcept
