@@ -90,7 +90,7 @@ struct promise
  * @return std::coroutine_handle<> 下一個要 resume 的 coroutine handle，若無則為 noop
  */
 template<typename Promise>
-std::coroutine_handle<> chain_and_resume(std::coroutine_handle<Promise>&   resume_handle,
+std::coroutine_handle<> chain_coroutines(std::coroutine_handle<Promise>&   resume_handle,
                                          std::coroutine_handle<Promise>&  waiting_handle,
                                          std::coroutine_handle<Promise>&& current_handle) noexcept
 {
@@ -153,7 +153,7 @@ public:
             auto&  resume_handle = current_handle.promise().resume_handle;
             auto& waiting_handle = std::get<await_key<Key>>(*this).waiting_handle;
 
-            return chain_and_resume(resume_handle, waiting_handle, std::move(current_handle));
+            return chain_coroutines(resume_handle, waiting_handle, std::move(current_handle));
         }
 
         auto await_resume() const
@@ -175,28 +175,38 @@ public:
         {
             auto& resume_handle = current_handle.promise().resume_handle;
 
-            return chain_and_resume(resume_handle, waiting_handle, std::move(current_handle));
+            return chain_coroutines(resume_handle, waiting_handle, std::move(current_handle));
         }
 
         auto await_resume() const {}
     };
 
-    template<typename Key, typename Mapped>
-    auto insert_or_assign(Key&& key, Mapped&& obj)
+    template<typename Key>
+    auto wait(const Key& key)
     {
-        auto pair = map_.insert_or_assign(std::forward<Key>(key), std::forward<Mapped>(obj));
-        if (!pair.second) // pair.bool
-            return pair;
+        return key_awaiter{coroutines_[key]};
+    }
 
-        auto iteraotr  = coroutines_.find(std::forward<Key>(key));
+    template<typename Key>
+    auto resume(const Key& key)
+    {
+        auto iteraotr  = coroutines_.find(key);
         if  (iteraotr != coroutines_.end())
         {
-            // 先 move 出來再 erase，避免 resume() 插入新元素時 invalid iterator
+            // 先 move handle 出來再 erase，避免在 resume() 期間插入新元素，導致 iterator 失效
             auto handle = std::move(iteraotr->second);
 
             coroutines_.erase(iteraotr);
             handle.resume();
         }
+    }
+
+    template<typename Key, typename Mapped>
+    auto insert_or_assign(Key&& key, Mapped&& obj)
+    {
+        auto pair = map_.insert_or_assign(std::forward<Key>(key), std::forward<Mapped>(obj));
+        if  (pair.second)
+            resume(pair.first->first); // pair.iterator->key
 
         return pair;
     }
@@ -205,26 +215,10 @@ public:
     auto try_emplace(Key&& key, Args&&... args)
     {
         auto pair = map_.try_emplace(std::forward<Key>(key), std::forward<Args>(args)...);
-        if (!pair.second) // pair.bool
-            return pair;
-
-        auto iteraotr  = coroutines_.find(std::forward<Key>(key));
-        if  (iteraotr != coroutines_.end())
-        {
-            // 先 move 出來再 erase，避免 resume() 插入新元素時 invalid iterator
-            auto handle = std::move(iteraotr->second);
-
-            coroutines_.erase(iteraotr);
-            handle.resume();
-        }
+        if  (pair.second)
+            resume(pair.first->first); // pair.iterator->key
 
         return pair;
-    }
-
-    template<typename Key>
-    auto find(const Key& key)
-    {
-        return map_.find(key);
     }
 
     template<typename Key>
@@ -238,9 +232,9 @@ public:
     }
 
     template<typename Key>
-    auto wait(const Key& key)
+    auto find(const Key& key)
     {
-        return key_awaiter{coroutines_[key]};
+        return map_.find(key);
     }
 
     auto end() noexcept
