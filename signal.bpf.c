@@ -68,7 +68,11 @@ struct {
 struct vm_area_argument
 {
     u32 path_i;
+#if LINUX_VERSION_CODE && LINUX_VERSION_CODE < KERNEL_VERSION(6, 1, 0)
     struct vm_area_struct *vma;
+#else
+    // struct bpf_iter_task_vma vma_iter;
+#endif
 };
 
 struct {
@@ -276,6 +280,12 @@ long try_update_path(void *ctx, const struct path *path)
     return 0;
 }
 
+SEC("iter/task_vma")
+int proc_maps(struct bpf_iter__task_vma *ctx)
+{
+
+}
+
 SEC("raw_tracepoint")
 int vm_area_tailcall(struct bpf_raw_tracepoint_args *ctx)
 {
@@ -288,7 +298,13 @@ int vm_area_tailcall(struct bpf_raw_tracepoint_args *ctx)
     struct file             *file     = NULL;
 
     u32 i, path_i = argument->path_i;
+
+#if LINUX_VERSION_CODE && LINUX_VERSION_CODE < KERNEL_VERSION(6, 1, 0)
     struct vm_area_struct *vma = argument->vma;
+#else
+    struct bpf_iter_task_vma vma_iter;
+    bpf_iter_task_vma_new(&vma_iter, (struct task_struct *)bpf_get_current_task(), 0);
+#endif
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 3, 0)
     #pragma unroll
@@ -297,6 +313,10 @@ int vm_area_tailcall(struct bpf_raw_tracepoint_args *ctx)
     {
         barrier();
 
+#if LINUX_VERSION_CODE && LINUX_VERSION_CODE < KERNEL_VERSION(6, 1, 0)
+#else
+        struct vm_area_struct *vma = bpf_iter_task_vma_next(&vma_iter);
+#endif
         if (!vma)
             break;
 
@@ -305,7 +325,10 @@ int vm_area_tailcall(struct bpf_raw_tracepoint_args *ctx)
         bpf_core_read(&area->vm_end,   sizeof(area->vm_end),   &vma->vm_end);
         bpf_core_read(&area->vm_pgoff, sizeof(area->vm_pgoff), &vma->vm_pgoff);
         bpf_core_read(&file,           sizeof(file),           &vma->vm_file);
+
+#if LINUX_VERSION_CODE && LINUX_VERSION_CODE < KERNEL_VERSION(6, 1, 0)
         bpf_core_read(&vma,            sizeof(vma),            &vma->vm_next);
+#endif
 
         if (file)
         {
@@ -329,12 +352,21 @@ int vm_area_tailcall(struct bpf_raw_tracepoint_args *ctx)
         offsetof(struct vm_area_event, area[i])));    
 
     argument->path_i = path_i;
+
+#if LINUX_VERSION_CODE && LINUX_VERSION_CODE < KERNEL_VERSION(6, 1, 0)
     argument->vma    = vma;
+#endif
 
     if (i == MAX_AREA)
         bpf_tail_call_static(ctx, &prog_array_map, TAIL_CALL_ZERO);
     else
+    {
+#if LINUX_VERSION_CODE && LINUX_VERSION_CODE < KERNEL_VERSION(6, 1, 0)
+#else
+        bpf_iter_task_vma_destroy(&vma_iter);
+#endif
         bpf_tail_call_static(ctx, &prog_array_map, TAIL_CALL_ONE);
+    }
 
     bpf_printk("bpf_tail_call_static error");
     return 0;
@@ -846,11 +878,13 @@ int raw_tracepoint__sys_exit(struct bpf_raw_tracepoint_args *ctx)
 
         struct task_struct *task = (struct task_struct *)bpf_get_current_task();
 
-        struct vm_area_argument argument =
-        {
-            .path_i = 0,
-            .vma    = BPF_CORE_READ(task, mm, mmap)
-        };
+        struct vm_area_argument argument;
+        argument.path_i = 0;
+#if LINUX_VERSION_CODE && LINUX_VERSION_CODE < KERNEL_VERSION(6, 1, 0)
+        argument.vma = BPF_CORE_READ(task, mm, mmap);
+#else
+        CHECK_ERROR(bpf_iter_task_vma_new(&argument.vma_iter, task, 0));
+#endif
 
         CHECK_ERROR(bpf_map_update_elem(&vm_area_map, &zero, &argument, BPF_ANY));
 
