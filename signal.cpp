@@ -282,45 +282,40 @@ struct kill_argument
     __u32               target_pid;
     std::optional<int>  signal;
 
-    auto println(__u32 tgid, __u32 pid, int cpu)
+    auto println(__u32 tgid, __u32 pid, int cpu) const
     {
         std::println("pid: {:>6}, tid: {:>6}, kill,    ret: {:>5}, target pid: {}, signal: {}",
-            tgid,
-            pid,
-            ret.value(),
-            target_pid,
-            signal.value());
+                     tgid, pid, ret.value(), target_pid, signal.value());
     }
 };
 
-struct sys_enter_kill_handler
+class kill_event_handler
 {
-    std::unordered_map<__u64, kill_argument>& map_;
+    std::unordered_map<__u64, kill_argument> map_;
 
-    void operator()(int cpu, void *data, __u32 size)
+public:
+    void enter(int cpu, void *data, __u32 size)
     {
         auto event = static_cast<sys_enter_kill_event*>(data);
 
+        // 用 ktime 當 key 綁定同一次 kill 的 enter/exit
         auto& argument = map_[event->ktime];
         argument.target_pid = event->target_pid;
         argument.signal     = event->signal;
 
+        // exit 可能先於 enter 到達，只有在 ret 已到才列印
         if (argument.ret)
             argument.println(event->tgid, event->pid, cpu);
     }
-};
 
-struct sys_exit_kill_handler
-{
-    std::unordered_map<__u64, kill_argument>& map_;
-
-    void operator()(int cpu, void *data, __u32 size)
+    void exit(int cpu, void *data, __u32 size)
     {
         auto event = static_cast<sys_exit_kill_event*>(data);
 
         auto& argument = map_[event->ktime];
         argument.ret = event->ret;
 
+        // enter 可能先於 exit 到達，只有在 signal 已到才列印
         if (argument.signal)
             argument.println(event->tgid, event->pid, cpu);
     }
@@ -1037,7 +1032,7 @@ int main(int argc, char *argv[])
         throw std::runtime_error(blaze_err_str(blaze_err_last()));
 
     execve_event_handler execve_handler;
-    std::unordered_map<__u64, kill_argument> kill_map;
+    kill_event_handler   kill_handler;
     std::unordered_map<__u64, read_argument> read_map;
     std::unordered_map<__u64, std::set<vm_area_event::vm_area, vm_area_comp>> vm_area_map;
     std::unordered_map<path,  std::string, path_hash> names_map;
@@ -1046,8 +1041,8 @@ int main(int argc, char *argv[])
     event_handler<EVENT_MAX> handler;
     handler[EVENT_ID(sys_enter_execve_event)]   = std::bind_front(&execve_event_handler::enter, &execve_handler);
     handler[EVENT_ID(sys_exit_execve_event)]    = std::bind_front(&execve_event_handler::exit,  &execve_handler);
-    handler[EVENT_ID(sys_enter_kill_event)]     = sys_enter_kill_handler{kill_map};
-    handler[EVENT_ID(sys_exit_kill_event)]      = sys_exit_kill_handler{kill_map};
+    handler[EVENT_ID(sys_enter_kill_event)]     = std::bind_front(&kill_event_handler::enter,   &kill_handler);
+    handler[EVENT_ID(sys_exit_kill_event)]      = std::bind_front(&kill_event_handler::exit,    &kill_handler);
     handler[EVENT_ID(sys_enter_read_event)]     = sys_enter_read_handler{read_map, names_map};
     handler[EVENT_ID(sys_exit_read_event)]      = sys_exit_read_handler{read_map, names_map};
     handler[EVENT_ID(path_event)]               = path_handler{names_map};
