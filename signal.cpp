@@ -211,7 +211,7 @@ struct execve_argument
     std::optional<__u32>     argc;
     std::vector<std::string> argv;
 
-    auto println(__u32 tgid, __u32 pid, int cpu)
+    auto println(__u32 tgid, __u32 pid, int cpu) const
     {
         std::println("pid: {:>6}, tid: {:>6}, execve, cpu: {}, ret: {:>5}, argc: {}, argv: {}",
                      tgid, pid, cpu, ret.value(), argc.value(), argv);
@@ -229,19 +229,29 @@ struct sys_enter_execve_handler
     {
         auto event = static_cast<sys_enter_execve_event*>(data);
 
+        // 用 ktime 作為 key，把同一次 execve 的 enter/exit 事件綁在一起
         auto& argument = map_[event->ktime];
 
         if (event->argv_i_size)
-        {
             if (event->i == std::size(argument.argv))
-                argument.argv.emplace_back(event->argv_i, event->argv_i_size - 1); // not include '\0'
+                // eBPF 會把 argv 分多段傳送
+                argument.argv.emplace_back(event->argv_i, event->argv_i_size - 1);
             else
-                std::println("pid: {:>6}, tid: {:>6}, execve, cpu: {}, warning: out of order",
+                std::println("pid: {:>6}, tid: {:>6}, execve, cpu: {}, warning: argv out of order",
                              event->tgid, event->pid, cpu);
-        }
         else
         {
-            argument.argc = event->i;
+            // 當最後一個 enter 事件的大小等於零，代表 argv 已經傳送完畢，
+            // 記錄 execve 的參數數量
+            argument.argc = std::size(argument.argv);
+
+            // 由於 BPF 每個 CPU 各有獨立的 perf ring buffer，
+            // 使用者空間讀取時，會同時輪詢多個 buffer，哪個可以讀就先處理哪個事件。
+            // 如果 exit 事件（kretprobe）剛好跑到別的 CPU 先被讀取，
+            // 那就會出現「exit 先於 enter」的情況。
+
+            // 因此：當 enter 最後階段拿到 argc 之後，如果之前已經在 exit handler
+            // 拿到 ret，則此時兩邊資料都齊全，才真正呼叫 println()。
             if (argument.ret)
                 argument.println(event->tgid, event->pid, cpu);
         }
@@ -255,10 +265,15 @@ struct sys_exit_execve_handler
     void operator()(int cpu, void *data, __u32 size)
     {
         auto event = static_cast<sys_exit_execve_event*>(data);
-
         auto& argument = map_[event->ktime];
+
+        // 記錄 execve 的 return value
         argument.ret = event->ret;
 
+        // 同理，如果 enter 的參數剛好在另一個 ring buffer 還沒被讀取到，
+        // 即使 exit handler 先拿到 ret 也不能直接列印。
+        // 必須等到使用者空間接收到 enter 的 argument.argc 後，
+        // 兩邊資料才算完整，這時才呼叫 println()。
         if (argument.argc)
             argument.println(event->tgid, event->pid, cpu);
     }
