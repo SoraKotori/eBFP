@@ -14,6 +14,7 @@
 #include <span>
 #include <set>
 #include <chrono>
+#include <type_traits>
 
 #include <sys/wait.h>
 #include <sys/stat.h>
@@ -221,11 +222,12 @@ struct execve_argument
     }
 };
 
-struct sys_enter_execve_handler
+class execve_event_handler
 {
-    std::unordered_map<__u64, execve_argument>& map_;
+    std::unordered_map<__u64, execve_argument> map_;
 
-    void operator()(int cpu, void *data, __u32 size)
+public:
+    void enter(int cpu, void *data, __u32 size)
     {
         auto event = static_cast<sys_enter_execve_event*>(data);
 
@@ -256,13 +258,8 @@ struct sys_enter_execve_handler
                 argument.println(event->tgid, event->pid, cpu);
         }
     }
-};
 
-struct sys_exit_execve_handler
-{
-    std::unordered_map<__u64, execve_argument>& map_;
-
-    void operator()(int cpu, void *data, __u32 size)
+    void exit(int cpu, void *data, __u32 size)
     {
         auto event = static_cast<sys_exit_execve_event*>(data);
         auto& argument = map_[event->ktime];
@@ -1039,7 +1036,7 @@ int main(int argc, char *argv[])
     if (!normalizer)
         throw std::runtime_error(blaze_err_str(blaze_err_last()));
 
-    std::unordered_map<__u64, execve_argument> execve_map;
+    execve_event_handler execve_handler;
     std::unordered_map<__u64, kill_argument> kill_map;
     std::unordered_map<__u64, read_argument> read_map;
     std::unordered_map<__u64, std::set<vm_area_event::vm_area, vm_area_comp>> vm_area_map;
@@ -1047,8 +1044,8 @@ int main(int argc, char *argv[])
     std::unordered_map<__u64, exit_argument> exit_map;
 
     event_handler<EVENT_MAX> handler;
-    handler[EVENT_ID(sys_enter_execve_event)]   = sys_enter_execve_handler{execve_map};
-    handler[EVENT_ID(sys_exit_execve_event)]    = sys_exit_execve_handler{execve_map};
+    handler[EVENT_ID(sys_enter_execve_event)]   = std::bind_front(&execve_event_handler::enter, &execve_handler);
+    handler[EVENT_ID(sys_exit_execve_event)]    = std::bind_front(&execve_event_handler::exit,  &execve_handler);
     handler[EVENT_ID(sys_enter_kill_event)]     = sys_enter_kill_handler{kill_map};
     handler[EVENT_ID(sys_exit_kill_event)]      = sys_exit_kill_handler{kill_map};
     handler[EVENT_ID(sys_enter_read_event)]     = sys_enter_read_handler{read_map, names_map};
