@@ -335,8 +335,8 @@ struct read_argument
     // 定義最大長度，eBPF 最大可傳送的大小
     static constexpr long max_size = MAX_READ_UNROLL * MAX_ARG_LEN;
 
-    template<typename Char>
-    auto println(__u32 tgid, __u32 pid, int cpu, std::basic_string_view<Char> path_name) const
+    auto println(__u32 tgid, __u32 pid, int cpu,
+                 const std::unordered_map<struct path, std::string, path_hash>& names_map) const
     {     
         std::string_view mode;
         std::string permission(10, '-');
@@ -367,6 +367,12 @@ struct read_argument
         if (S_ISGID & i_mode) permission[6] = (i_mode & S_IXGRP) ? 's' : 'S';
         if (S_ISVTX & i_mode) permission[9] = (i_mode & S_IXOTH) ? 't' : 'T';
 
+        // path_event 可能尚未到達，導致 names_map 查不到路徑名稱
+        auto path_iterator = names_map.find(path);
+        auto path_name = path_iterator == std::end(names_map)
+            ? std::string_view{"not find path"}
+            : std::string_view{path_iterator->second};
+
         std::println("pid: {:>6}, tid: {:>6}, read,    ret: {:>5}, fd: {:>3}, {} ({}), name: \"{}\"",
                      tgid, pid, ret, fd, permission, mode, path_name);
 
@@ -388,9 +394,9 @@ struct read_argument
 
 struct read_event_handler
 {
+    __u32 context;
     std::unordered_map<__u64, read_argument> map_;
     const std::unordered_map<path, std::string, path_hash>& names_map_;
-    const __u32 context;
 
     void enter(int cpu, void *data, __u32 size)
     {
@@ -406,23 +412,16 @@ struct read_event_handler
             return;
         }
 
-        auto& argument = iterator->second;
+        auto& buffer = iterator->second.buffer;
 
         // 將本次讀取的資料片段複製到 buffer
         // 如果 copy_n 回傳 buffer_end，代表已經接收完整 content
-        if (std::end  (argument.buffer) == std::copy_n(event->buf, event->size,
-            std::begin(argument.buffer) + event->index))
+        if (std::end  (buffer) == std::copy_n(event->buf, event->size,
+            std::begin(buffer) + event->index))
         {
-            // path_event 可能尚未到達，導致 names_map_ 查不到路徑名稱
-            auto find_path = names_map_.find(argument.path);
-            auto path_name = find_path == std::end(names_map_)
-                ? std::string_view{"not find path"}
-                : std::string_view{find_path->second};
-
-            argument.println(event->tgid, event->pid, cpu, path_name);
-
-            // 由於 content 會占用大量的記憶體，因此需要釋放
-            map_.erase(iterator);
+            // 由於 buffer 會占用大量的記憶體，因此需要先釋放
+            auto node = map_.extract(iterator);
+            node.mapped().println(event->tgid, event->pid, cpu, names_map_);
         }
     }
 
@@ -430,38 +429,38 @@ struct read_event_handler
     {
         auto event = static_cast<sys_exit_read_event*>(data);
 
-        // 以 ktime 作為 key 建立新的 read_argument
-        // 可以考慮用 event->ret 初始化 buffer 大小
-        auto [iterator, inserted] = map_.try_emplace(event->ktime, event->ret,
-                                                                   event->fd,
-                                                                   event->i_mode,
-                                                                   event->path);
-        if (!inserted)
-        {
-            // ktime 重複的情況理論上不應該發生
-            std::println("warning: failed to insert read_argument for ktime {}", event->ktime);
-            return;
-        }
-
-        auto& argument = iterator->second;
-
-        // 根據 return value 調整 buffer 大小
         if (context && event->ret > 0)
         {
-            // 如果 event->ret 超出上限，就截斷
-            argument.buffer.resize(std::min(event->ret, read_argument::max_size));
-        }
-        else // 若 read 失敗，則不會傳送 content，提前印出 argument
-             // 可以考慮跟 enter 合併輸出邏輯，或是失敗時直接印出，而不插入到 map_ 中
-        {
-            // path_event 可能尚未到達，導致 names_map_ 查不到路徑名稱
-            auto find_path = names_map_.find(argument.path);
-            auto path_name = find_path == std::end(names_map_)
-                ? std::string_view{"not find path"}
-                : std::string_view{find_path->second};
+            // 以 ktime 作為 key 建立新的 read_argument
+            // 根據 return value 初始化 buffer 大小，如果超出 max_size 上限則截斷
+            auto [_, inserted] = map_.try_emplace(
+                event->ktime,
+                event->ret,
+                event->fd,
+                event->i_mode,
+                event->path,
+                std::vector<char>(std::min(event->ret, read_argument::max_size)));
 
-            argument.println(event->tgid, event->pid, cpu, path_name);
-            map_.erase(iterator);
+            if (!inserted)
+            {
+                // ktime 重複的情況理論上不應該發生
+                std::println("warning: failed to insert read_argument for ktime {}", event->ktime);
+                return;
+            }
+        }
+        // 若 read_context 設為 false 或沒有 context 可以讀取，
+        // 則不會傳送 enter event，提前印出 argument
+        else
+        {
+            read_argument argument
+            {
+                event->ret,
+                event->fd,
+                event->i_mode,
+                event->path
+            };
+
+            argument.println(event->tgid, event->pid, cpu, names_map_);
         }
     }
 };
@@ -1034,7 +1033,7 @@ int main(int argc, char *argv[])
     std::unordered_map<path,  std::string, path_hash> names_map;
     execve_event_handler execve_handler;
     kill_event_handler   kill_handler;
-    read_event_handler   read_handler{ .names_map_ = names_map, .context = context };
+    read_event_handler   read_handler{ .context = context, .names_map_ = names_map };
     std::unordered_map<__u64, std::set<vm_area_event::vm_area, vm_area_comp>> vm_area_map;
     std::unordered_map<__u64, exit_argument> exit_map;
 

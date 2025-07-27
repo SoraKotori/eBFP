@@ -705,7 +705,7 @@ int tracepoint__syscalls__sys_exit_read(struct trace_event_raw_sys_exit *ctx)
     const u32 zero = 0;
     u32 *context = CHECK_NULL(bpf_map_lookup_elem(&read_content, &zero));
     if (*context == false || event.exit.ret <= 0)
-        return 0; // !!! 邏輯錯誤: flag 設為 false 情況下，ret > 0 不會印出，因為沒有發送 enter event
+        return 0;
 
     // 初始化並填入 sys_enter_read_event 結構
     event.enter.base.event_id = EVENT_ID(sys_enter_read_event);
