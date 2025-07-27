@@ -383,7 +383,7 @@ struct read_argument
             std::end(magic) != std::ranges::mismatch(buffer, magic).in2)
         {
             // 如果 context 超出上限，就截斷並印出警告
-            if (std::size(buffer) > max_size)
+            if (ret > max_size)
                 std::println("warning: read size {} exceeds limit {}, truncating to {}",
                              ret, max_size, max_size);
 
