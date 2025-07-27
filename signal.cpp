@@ -336,7 +336,7 @@ struct read_argument
     static constexpr long max_size = MAX_READ_UNROLL * MAX_ARG_LEN;
 
     template<typename Char>
-    auto println(__u32 tgid, __u32 pid, int cpu, std::basic_string_view<Char> path_name)
+    auto println(__u32 tgid, __u32 pid, int cpu, std::basic_string_view<Char> path_name) const
     {     
         std::string_view mode;
         std::string permission(10, '-');
@@ -386,54 +386,51 @@ struct read_argument
     }
 };
 
-struct sys_enter_read_handler
+struct read_event_handler
 {
-    std::unordered_map<__u64, read_argument>& map_;
+    std::unordered_map<__u64, read_argument> map_;
     const std::unordered_map<path, std::string, path_hash>& names_map_;
 
-    void operator()(int cpu, void *data, __u32 size)
+    void enter(int cpu, void *data, __u32 size)
     {
         auto event = static_cast<sys_enter_read_event*>(data);
 
-        // 根據 ktime 找到對應的 read_argument
+        // 用 ktime 當 key 綁定同一次 read 的 enter/exit
         auto iterator = map_.find(event->ktime);
         if  (iterator == std::end(map_))
         {
-            // sys_exit_read 與 sys_enter_read 在相同的 eBPF 程式中，
-            // 理論上不應該有 out-of-order 的情況
+            // 先執行的 exit 已經插入 ktime 在 map 中了，
+            // 並且與 enter 在相同的 eBPF 程式中，理論上不會有 out-of-order 的情況
             std::println("warning: read_argument not found for ktime {}", event->ktime);
             return;
         }
 
         auto& argument = iterator->second;
-        auto  buffer_begin = std::begin(argument.buffer) + event->index;
-        auto  buffer_end   = std::end  (argument.buffer);
 
         // 將本次讀取的資料片段複製到 buffer
         // 如果 copy_n 回傳 buffer_end，代表已經接收完整 content
-        if (buffer_end == std::copy_n(event->buf, event->size, buffer_begin))
+        if (std::end  (argument.buffer) == std::copy_n(event->buf, event->size,
+            std::begin(argument.buffer) + event->index))
         {
             // path_event 可能尚未到達，導致 names_map_ 查不到路徑名稱
             auto find_path = names_map_.find(argument.path);
-            auto path_name = find_path == std::end(names_map_) ? std::string_view{"not find path"}
-                                                               : std::string_view{find_path->second};
+            auto path_name = find_path == std::end(names_map_)
+                ? std::string_view{"not find path"}
+                : std::string_view{find_path->second};
 
             argument.println(event->tgid, event->pid, cpu, path_name);
+
+            // 由於 content 會占用大量的記憶體，因此需要釋放
             map_.erase(iterator);
         }
     }
-};
 
-struct sys_exit_read_handler
-{
-    std::unordered_map<__u64, read_argument>& map_;
-    const std::unordered_map<path, std::string, path_hash>& names_map_;
-
-    void operator()(int cpu, void *data, __u32 size)
+    void exit(int cpu, void *data, __u32 size)
     {
         auto event = static_cast<sys_exit_read_event*>(data);
 
         // 以 ktime 作為 key 建立新的 read_argument
+        // 可以考慮用 event->ret 初始化 buffer 大小
         auto [iterator, inserted] = map_.try_emplace(event->ktime, event->ret,
                                                                    event->fd,
                                                                    event->i_mode,
@@ -447,18 +444,20 @@ struct sys_exit_read_handler
 
         auto& argument = iterator->second;
 
-        // 根據回傳值調整 buffer 大小; 若 ret <= 0，立刻輸出並移除
+        // 根據 return value 調整 buffer 大小
         if (event->ret > 0)
         {
             // 如果 event->ret 超出上限，就截斷
-            argument.buffer.resize(std::min(event->ret, argument.max_size));
+            argument.buffer.resize(std::min(event->ret, read_argument::max_size));
         }
-        else
+        else // 若 read 失敗，則不會傳送 content，提前印出 argument
+             // 可以考慮跟 enter 合併輸出邏輯，或是失敗時直接印出，而不插入到 map_ 中
         {
-            // event 可能 out-of-order 到達，若 path_event 尚未抵達，則找不到 path name
-            auto find_path = names_map_.find(event->path);
-            auto path_name = find_path == std::end(names_map_) ? std::string_view{"not find path"}
-                                                               : std::string_view{find_path->second};
+            // path_event 可能尚未到達，導致 names_map_ 查不到路徑名稱
+            auto find_path = names_map_.find(argument.path);
+            auto path_name = find_path == std::end(names_map_)
+                ? std::string_view{"not find path"}
+                : std::string_view{find_path->second};
 
             argument.println(event->tgid, event->pid, cpu, path_name);
             map_.erase(iterator);
@@ -1031,11 +1030,11 @@ int main(int argc, char *argv[])
     if (!normalizer)
         throw std::runtime_error(blaze_err_str(blaze_err_last()));
 
+    std::unordered_map<path,  std::string, path_hash> names_map;
     execve_event_handler execve_handler;
     kill_event_handler   kill_handler;
-    std::unordered_map<__u64, read_argument> read_map;
+    read_event_handler   read_handler{ .names_map_ = names_map };
     std::unordered_map<__u64, std::set<vm_area_event::vm_area, vm_area_comp>> vm_area_map;
-    std::unordered_map<path,  std::string, path_hash> names_map;
     std::unordered_map<__u64, exit_argument> exit_map;
 
     event_handler<EVENT_MAX> handler;
@@ -1043,8 +1042,8 @@ int main(int argc, char *argv[])
     handler[EVENT_ID(sys_exit_execve_event)]    = std::bind_front(&execve_event_handler::exit,  &execve_handler);
     handler[EVENT_ID(sys_enter_kill_event)]     = std::bind_front(&kill_event_handler::enter,   &kill_handler);
     handler[EVENT_ID(sys_exit_kill_event)]      = std::bind_front(&kill_event_handler::exit,    &kill_handler);
-    handler[EVENT_ID(sys_enter_read_event)]     = sys_enter_read_handler{read_map, names_map};
-    handler[EVENT_ID(sys_exit_read_event)]      = sys_exit_read_handler{read_map, names_map};
+    handler[EVENT_ID(sys_enter_read_event)]     = std::bind_front(&read_event_handler::enter,   &read_handler);
+    handler[EVENT_ID(sys_exit_read_event)]      = std::bind_front(&read_event_handler::exit,    &read_handler);
     handler[EVENT_ID(path_event)]               = path_handler{names_map};
     handler[EVENT_ID(vm_area_event)]            = vm_area_handler{vm_area_map, false, false, 32};
     handler[EVENT_ID(stack_event)]              = stack_handler{normalizer.get(), symbolizer.get(), vm_area_map, names_map, exit_map, skeleton->maps.path_map};
