@@ -370,18 +370,18 @@ struct read_argument
         std::println("pid: {:>6}, tid: {:>6}, read,    ret: {:>5}, fd: {:>3}, {} ({}), name: \"{}\"",
                      tgid, pid, ret, fd, permission, mode, path_name);
 
-        // 如果 read size 超出上限，就截斷並印出警告
-        if (ret > max_size)
-            std::println("warning: read size {} exceeds limit {}, truncating to {}",
-                         ret, max_size, max_size);
+        constexpr std::string_view magic{"\177ELF"};
 
-        // 若有讀取到資料，並且不是 ELF 檔，則輸出文字內容
-        if (ret > 0)
+        // 若有讀取到 context，並且不是 ELF 檔，則輸出文字內容
+        if (std::size(buffer) &&
+            std::end(magic) != std::ranges::mismatch(buffer, magic).in2)
         {
-            constexpr std::string_view magic{"\177ELF"};
+            // 如果 context 超出上限，就截斷並印出警告
+            if (std::size(buffer) > max_size)
+                std::println("warning: read size {} exceeds limit {}, truncating to {}",
+                             ret, max_size, max_size);
 
-            if (std::end(magic) != std::ranges::mismatch(buffer, magic).in2)
-                std::println("{}", std::string_view{std::begin(buffer), std::end(buffer)});
+            std::println("{}", std::string_view{std::begin(buffer), std::end(buffer)});
         }
     }
 };
@@ -390,6 +390,7 @@ struct read_event_handler
 {
     std::unordered_map<__u64, read_argument> map_;
     const std::unordered_map<path, std::string, path_hash>& names_map_;
+    const __u32 context;
 
     void enter(int cpu, void *data, __u32 size)
     {
@@ -445,7 +446,7 @@ struct read_event_handler
         auto& argument = iterator->second;
 
         // 根據 return value 調整 buffer 大小
-        if (event->ret > 0)
+        if (context && event->ret > 0)
         {
             // 如果 event->ret 超出上限，就截斷
             argument.buffer.resize(std::min(event->ret, read_argument::max_size));
@@ -1033,7 +1034,7 @@ int main(int argc, char *argv[])
     std::unordered_map<path,  std::string, path_hash> names_map;
     execve_event_handler execve_handler;
     kill_event_handler   kill_handler;
-    read_event_handler   read_handler{ .names_map_ = names_map };
+    read_event_handler   read_handler{ .names_map_ = names_map, .context = context };
     std::unordered_map<__u64, std::set<vm_area_event::vm_area, vm_area_comp>> vm_area_map;
     std::unordered_map<__u64, exit_argument> exit_map;
 
