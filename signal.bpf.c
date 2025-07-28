@@ -250,13 +250,16 @@ long output_path(void *ctx, const struct path *path)
     event->base.event_id = EVENT_ID(path_event);
     event->path          = *path;
     event->index         = RETURN_ERROR(read_path(event->name, path));
+
+    // 更新 ktime 用來計算 event output 之後，需要多久時間 user space 才會接收到 event
     event->ktime         = bpf_ktime_get_ns();
 
     RETURN_ERROR(bpf_perf_event_output(
         ctx, &events, BPF_F_CURRENT_CPU, event,
         offsetof(struct path_event, name) + MAX_ARG_LEN - MAX_NAME_LEN));
 
-    // 如果 bpf_perf_event_output 失敗，則不會更新 ktime
+    // 更新 ktime 到 map 中，即便 event 尚未送達，user space 也可以檢查 event 是否送出
+    // 如果 event output 失敗，則不會更新 ktime
     RETURN_ERROR(bpf_map_update_elem(&path_map, path, &event->ktime, BPF_EXIST));
 
     return 0;
@@ -265,8 +268,11 @@ long output_path(void *ctx, const struct path *path)
 static __always_inline
 long try_update_path(void *ctx, const struct path *path)
 {
+    // 使用 u64 作為 map 的 value type，以便日後更新 ktime 來計算延遲
+    // 但此處僅用作 flag 判斷是否為新的 path，ktime 本身的數值並不重要，故直接設為 0
     const u64 ktime = 0;
 
+    // 嘗試以 BPF_NOEXIST 模式更新 map，只有在遇到尚未存在的 path 時才會成功
     long error = bpf_map_update_elem(&path_map, path, &ktime, BPF_NOEXIST);
     if  (error == 0)
         RETURN_ERROR(output_path(ctx, path));

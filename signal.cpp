@@ -398,9 +398,10 @@ struct read_argument : public std::enable_shared_from_this<read_argument>
 
 struct read_event_handler
 {
-    std::unordered_map<__u64, std::shared_ptr<read_argument>> map_;
-    __u32 context;
     const std::unordered_map<path, std::string, path_hash>& names_map_;
+    __u32 context;
+
+    std::unordered_map<__u64, std::shared_ptr<read_argument>> map_;
 
     void enter(int cpu, void *data, __u32 size)
     {
@@ -444,7 +445,7 @@ struct read_event_handler
             argument->buffer.resize(std::min(event->ret, read_argument::max_size));
 
             // 用 ktime 當 key 綁定同一次 read 的 enter/exit
-            if (!map_.try_emplace(event->ktime, std::move(argument)).second)
+            if (map_.try_emplace(event->ktime, std::move(argument)).second == false)
                 // ktime 重複的情況理論上不應該發生
                 std::println("warning: failed to insert read_argument for ktime {}", event->ktime);
         }
@@ -457,9 +458,10 @@ struct read_event_handler
     }
 };
 
-struct path_handler
+struct path_event_handler
 {
     std::unordered_map<path, std::string, path_hash>& names_map_;
+    bool print_path_ = true;
 
     void operator()(int cpu, void *data, __u32 size)
     {
@@ -469,32 +471,36 @@ struct path_handler
             event->name + event->index,
             event->name + MAX_ARG_LEN - MAX_NAME_LEN};
 
-        auto [iterator, inserted] = names_map_.try_emplace(event->path, std::move(path_name));
+        // 用 path 當 key 插入從 event 取得的 path name
+        auto [iterator, inserted] = names_map_.try_emplace(event->path, path_name);
 
-        if (inserted)
+        // 如果 path 被重複插入時，印出 新/舊 path 的警告訊息
+        if (!inserted)
         {
-            struct timespec tp{};
+            std::println("warning: names_map_.try_emplace.inserted == false\n"
+                "    old path: {}\n"
+                "    new path: {}", iterator->second, path_name);
+            return;
+        }
+
+        if (print_path_)
+        {
+            struct timespec tp;
             if (clock_gettime(CLOCK_MONOTONIC, &tp) < 0)
             {
                 std::system_error error{errno, std::system_category()};
-                std::println("warning: clock_gettime, code: {}, what: {}", error.code().value(),
-                                                                           error.what());
+                std::println("warning: clock_gettime, code: {}, what: {}",
+                             error.code().value(),
+                             error.what());
+                return;
             }
-            else
-            {
-                std::println("    cpu: {}, path: {}, ktime: {}, mnt: {:p}, dentry: {:p}",
-                             cpu,
-                             iterator->second,
-                             tp.tv_sec * 1'000'000'000 + tp.tv_nsec - event->ktime,
-                             event->path.mnt,
-                             event->path.dentry);
-            }
-        }
-        else
-        {
-            std::println("warning: names_map_.try_emplace.inserted == false\n"
-                         "    old path: {}\n"
-                         "    new path: {}", iterator->second, path_name);
+
+            std::println("    cpu: {}, path: {}, latency: {}, mnt: {:p}, dentry: {:p}",
+                         cpu,
+                         path_name,
+                         tp.tv_sec * 1'000'000'000 + tp.tv_nsec - event->ktime,
+                         event->path.mnt,
+                         event->path.dentry);
         }
     }
 };
@@ -786,7 +792,7 @@ struct stack_handler
                 }
 
                 std::println("    elf: not find path, elf_off: {:>#10x}, "
-                             "cpu: {}, ktime: {}, "
+                             "cpu: {}, latency: {}, "
                              "addr: {:#x}, start: {:#x}, end: {:#x}, mnt: {:p}, dentry: {:p}",
                              elf_off,
                              cpu,
@@ -1022,10 +1028,10 @@ int main(int argc, char *argv[])
     if (!normalizer)
         throw std::runtime_error(blaze_err_str(blaze_err_last()));
 
-    std::unordered_map<path,  std::string, path_hash> names_map;
+    std::unordered_map<path, std::string, path_hash> names_map;
     execve_event_handler execve_handler;
     kill_event_handler   kill_handler;
-    read_event_handler   read_handler{ .context = context, .names_map_ = names_map };
+    read_event_handler   read_handler{ .names_map_ = names_map, .context = context };
     std::unordered_map<__u64, std::set<vm_area_event::vm_area, vm_area_comp>> vm_area_map;
     std::unordered_map<__u64, exit_argument> exit_map;
 
@@ -1036,7 +1042,7 @@ int main(int argc, char *argv[])
     handler[EVENT_ID(sys_exit_kill_event)]      = std::bind_front(&kill_event_handler::exit,    &kill_handler);
     handler[EVENT_ID(sys_enter_read_event)]     = std::bind_front(&read_event_handler::enter,   &read_handler);
     handler[EVENT_ID(sys_exit_read_event)]      = std::bind_front(&read_event_handler::exit,    &read_handler);
-    handler[EVENT_ID(path_event)]               = path_handler{names_map};
+    handler[EVENT_ID(path_event)]               = path_event_handler{names_map};
     handler[EVENT_ID(vm_area_event)]            = vm_area_handler{vm_area_map, false, false, 32};
     handler[EVENT_ID(stack_event)]              = stack_handler{normalizer.get(), symbolizer.get(), vm_area_map, names_map, exit_map, skeleton->maps.path_map};
     handler[EVENT_ID(sched_process_exit_event)] = handle_sched_process_exit;
