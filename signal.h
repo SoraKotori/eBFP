@@ -175,8 +175,8 @@ struct sys_exit_event
 
     PID_TGID_UNION;
     __u64 ktime;
-    long syscall_nr;
     long ret;
+    long syscall_nr;
 };
 
 struct do_mmap_event

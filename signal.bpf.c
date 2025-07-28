@@ -812,8 +812,8 @@ int raw_tracepoint__sys_exit(struct bpf_raw_tracepoint_args *ctx)
     INIT_EVENT(event, sys_exit_event,
         .pid        = nsdata.pid,
         .tgid       = nsdata.tgid,
-        .syscall_nr = BPF_CORE_READ(regs, orig_ax),
-        .ret        = BPF_CORE_READ(regs, ax)
+        .ret        = BPF_CORE_READ(regs, ax),
+        .syscall_nr = BPF_CORE_READ(regs, orig_ax)
     );
 
     // 忽略自身的 process
@@ -840,6 +840,7 @@ int raw_tracepoint__sys_exit(struct bpf_raw_tracepoint_args *ctx)
         // 需要印出 stack 時，需要提供 ktime 讓 stack_event 能查詢到對應的資訊
         event.ktime = bpf_ktime_get_ns();
 
+        // !!!邏輯錯誤: 即使沒有要輸出 call stack，也應該要能輸出普通的 exit event
         CHECK_ERROR(bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU,
                                           &event, sizeof(event)));
 

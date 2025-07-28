@@ -478,8 +478,8 @@ struct path_event_handler
         if (!inserted)
         {
             std::println("warning: names_map_.try_emplace.inserted == false\n"
-                "    old path: {}\n"
-                "    new path: {}", iterator->second, path_name);
+                         "    old path: {}\n"
+                         "    new path: {}", iterator->second, path_name);
             return;
         }
 
@@ -613,11 +613,10 @@ struct do_coredump_handler
 
 struct exit_argument
 {
-    int cpu;
-    long syscall_nr;
     long ret;
+    long syscall_nr;
 
-    static auto print(__u32 tgid, __u32 pid, int cpu, long ret, long syscall_nr)
+    auto println(__u32 tgid, __u32 pid, int cpu) const
     {
         std::println("pid: {:>6}, tid: {:>6}, syscall, cpu: {}, ret: {:>5}, number: {}",
                      tgid, pid, cpu, ret, syscall_nr);
@@ -632,12 +631,14 @@ struct sys_exit_handler
     {
         auto event = static_cast<sys_exit_event*>(data);
 
-        if (event->ktime == 0)
-            exit_argument::print(event->tgid, event->pid, cpu, event->ret, event->syscall_nr);
+        exit_argument argument{event->ret, event->syscall_nr};
 
-        else if (map_.try_emplace(event->ktime, cpu,
-                                                event->syscall_nr,
-                                                event->ret).second == false)
+        // !!!邏輯錯誤: 目前不會送出普通的 exit event
+        if (event->ktime == 0)
+            argument.println(event->tgid, event->pid, cpu);
+
+        else if (map_.try_emplace(event->ktime, std::move(argument)).second == false)
+            // ktime 重複的情況理論上不應該發生
             std::println("warning: failed to insert exit_argument for ktime {}", event->ktime);
     }
 };
@@ -722,12 +723,8 @@ struct stack_handler
         // 若要改成 coroutine 則要複製 event
         auto event = static_cast<stack_event*>(data);
 
-        auto argument = exit_map_.extract(event->ktime);
-        exit_argument::print(event->tgid,
-                             event->pid,
-                             argument.mapped().cpu,
-                             argument.mapped().ret,
-                             argument.mapped().syscall_nr);
+        auto node = exit_map_.extract(event->ktime);
+        node.mapped().println(event->tgid, event->pid, cpu);
 
         const auto& areas = vm_area_map_.at(event->pid_tgid);
         const auto  addrs = std::span<unsigned long>{event->addrs, event->addr_size};
