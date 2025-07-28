@@ -324,7 +324,7 @@ public:
 // read_argument: 用於蒐集同一次 read() 呼叫的參數與緩衝區內容
 // 在同一個 eBPF 程式中，sys_exit_read 會先送出回傳值 (buffer 大小)
 // 接著 sys_enter_read 再負責將實際讀取的內容填入 buffer
-struct read_argument
+struct read_argument : public std::enable_shared_from_this<read_argument>
 {
     long ret;
     int fd;
@@ -335,9 +335,15 @@ struct read_argument
     // 定義最大長度，eBPF 最大可傳送的大小
     static constexpr long max_size = MAX_READ_UNROLL * MAX_ARG_LEN;
 
-    auto println(__u32 tgid, __u32 pid, int cpu,
+    // 定義 ELF 檔的 magic number 
+    static constexpr std::string_view elf_magic{"\177ELF"};
+
+    Task println(__u32 tgid, __u32 pid, int cpu,
                  const std::unordered_map<struct path, std::string, path_hash>& names_map) const
-    {     
+    {
+        // 保持 *this 存活直到 coroutine 的生命週期結束
+        [[maybe_unused]] auto self = shared_from_this();
+
         std::string_view mode;
         std::string permission(10, '-');
 
@@ -376,11 +382,9 @@ struct read_argument
         std::println("pid: {:>6}, tid: {:>6}, read,    ret: {:>5}, fd: {:>3}, {} ({}), name: \"{}\"",
                      tgid, pid, ret, fd, permission, mode, path_name);
 
-        constexpr std::string_view magic{"\177ELF"};
-
         // 若有讀取到 context，並且不是 ELF 檔，則輸出文字內容
         if (std::size(buffer) &&
-            std::end(magic) != std::ranges::mismatch(buffer, magic).in2)
+            std::end(elf_magic) != std::ranges::mismatch(buffer, elf_magic).in2)
         {
             // 如果 context 超出上限，就截斷並印出警告
             if (ret > max_size)
@@ -394,8 +398,8 @@ struct read_argument
 
 struct read_event_handler
 {
+    std::unordered_map<__u64, std::shared_ptr<read_argument>> map_;
     __u32 context;
-    std::unordered_map<__u64, read_argument> map_;
     const std::unordered_map<path, std::string, path_hash>& names_map_;
 
     void enter(int cpu, void *data, __u32 size)
@@ -412,16 +416,16 @@ struct read_event_handler
             return;
         }
 
-        auto& buffer = iterator->second.buffer;
+        auto& buffer = iterator->second->buffer;
 
         // 將本次讀取的資料片段複製到 buffer
         // 如果 copy_n 回傳 buffer_end，代表已經接收完整 content
         if (std::end  (buffer) == std::copy_n(event->buf, event->size,
             std::begin(buffer) + event->index))
         {
-            // 由於 buffer 會占用大量的記憶體，因此需要先釋放
+            // 由於 buffer 會占用大量的記憶體，因此需要先提取釋放
             auto node = map_.extract(iterator);
-            node.mapped().println(event->tgid, event->pid, cpu, names_map_);
+            node.mapped()->println(event->tgid, event->pid, cpu, names_map_);
         }
     }
 
@@ -429,38 +433,26 @@ struct read_event_handler
     {
         auto event = static_cast<sys_exit_read_event*>(data);
 
+        auto argument = std::make_shared<read_argument>(event->ret,
+                                                        event->fd,
+                                                        event->i_mode,
+                                                        event->path);
+
         if (context && event->ret > 0)
         {
-            // 以 ktime 作為 key 建立新的 read_argument
-            // 根據 return value 初始化 buffer 大小，如果超出 max_size 上限則截斷
-            auto [_, inserted] = map_.try_emplace(
-                event->ktime,
-                event->ret,
-                event->fd,
-                event->i_mode,
-                event->path,
-                std::vector<char>(std::min(event->ret, read_argument::max_size)));
+            // 根據 return value 調整 buffer 大小，如果超出 max_size 上限則截斷
+            argument->buffer.resize(std::min(event->ret, read_argument::max_size));
 
-            if (!inserted)
-            {
+            // 用 ktime 當 key 綁定同一次 read 的 enter/exit
+            if (!map_.try_emplace(event->ktime, std::move(argument)).second)
                 // ktime 重複的情況理論上不應該發生
                 std::println("warning: failed to insert read_argument for ktime {}", event->ktime);
-                return;
-            }
         }
-        // 若 read_context 設為 false 或沒有 context 可以讀取，
-        // 則不會傳送 enter event，提前印出 argument
         else
         {
-            read_argument argument
-            {
-                event->ret,
-                event->fd,
-                event->i_mode,
-                event->path
-            };
-
-            argument.println(event->tgid, event->pid, cpu, names_map_);
+            // 若 read_context 設為 false 或沒有 context 可以讀取，
+            // 則不會傳送 enter event，提前印出 argument
+            argument->println(event->tgid, event->pid, cpu, names_map_);
         }
     }
 };
