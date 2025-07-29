@@ -338,8 +338,8 @@ struct read_argument : public std::enable_shared_from_this<read_argument>
     // 定義 ELF 檔的 magic number 
     static constexpr std::string_view elf_magic{"\177ELF"};
 
-    Task println(__u32 tgid, __u32 pid, int cpu,
-                 const std::unordered_map<struct path, std::string, path_hash>& names_map) const
+    Task<promise> println(__u32 tgid, __u32 pid, int cpu,
+                          const std::unordered_map<struct path, std::string, path_hash>& names_map) const
     {
         // 保持 *this 存活直到 coroutine 的生命週期結束
         [[maybe_unused]] auto self = shared_from_this();
@@ -393,6 +393,8 @@ struct read_argument : public std::enable_shared_from_this<read_argument>
 
             std::println("{}", std::string_view{std::begin(buffer), std::end(buffer)});
         }
+
+        co_return;
     }
 };
 
@@ -434,10 +436,11 @@ struct read_event_handler
     {
         auto event = static_cast<sys_exit_read_event*>(data);
 
-        auto argument = std::make_shared<read_argument>(event->ret,
-                                                        event->fd,
-                                                        event->i_mode,
-                                                        event->path);
+        auto argument = std::make_shared<read_argument>();
+        argument->ret    = event->ret;
+        argument->fd     = event->fd;
+        argument->i_mode = event->i_mode;
+        argument->path   = event->path;
 
         if (context && event->ret > 0)
         {
@@ -474,7 +477,7 @@ struct path_event_handler
         // 用 path 當 key 插入從 event 取得的 path name
         auto [iterator, inserted] = names_map_.try_emplace(event->path, path_name);
 
-        // 如果 path 被重複插入時，印出 新/舊 path 的警告訊息
+        // 如果 path 被重複插入時，印出 old/new path 的警告訊息
         if (!inserted)
         {
             std::println("warning: names_map_.try_emplace.inserted == false\n"
