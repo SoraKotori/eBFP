@@ -715,13 +715,24 @@ struct stack_handler
     blaze_symbolizer* symbolizer_;
     const std::unordered_map<__u64, std::set<vm_area_event::vm_area, vm_area_comp>>& vm_area_map_;
     const std::unordered_map<path,  std::string, path_hash>& names_map_;
+
+    // 應該考慮更通用的結構來保存首段輸出的內容，像是 std::unordered_map<__u64, std::osyncstream>
+    // 或是 std::function 跟 coroutine 的方法延遲生成輸出內容
     std::unordered_map<__u64, exit_argument>& exit_map_;
     bpf_map *path_map_;
 
     void operator()(int cpu, void *data, __u32 size)
     {
-        // 若要改成 coroutine 則要複製 event
-        auto event = static_cast<stack_event*>(data);
+        coroutine(cpu, data, size);
+    }
+
+    Task coroutine(int cpu, void *data, __u32 size)
+    {
+        // coroutine 可能會暫停，此時 data 會被釋放，
+        // 因此必須先將原始資料複製到 local buffer 中，以確保之後存取依然有效
+        auto buffer = std::make_unique_for_overwrite<std::byte[]>(size);
+        auto event  = reinterpret_cast<stack_event*>(buffer.get());
+        std::memcpy(event, data, size);
 
         auto node = exit_map_.extract(event->ktime);
         node.mapped().println(event->tgid, event->pid, cpu);
@@ -846,6 +857,8 @@ struct stack_handler
 
             std::println();
         }
+
+        co_return;
     }
 };
 
