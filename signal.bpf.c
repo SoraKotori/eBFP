@@ -21,14 +21,21 @@ struct {
     __uint(max_entries, 1);
     __type(key, u32);
     __type(value, u64[MAX_SYSCALL]);
-} negative_ret_map SEC(".maps");
+} syscell_success_map SEC(".maps");
 
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
     __uint(max_entries, 1);
     __type(key, u32);
     __type(value, u64[MAX_SYSCALL]);
-} positive_ret_map SEC(".maps");
+} syscell_fail_map SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, u32);
+    __type(value, u64[MAX_SYSCALL]);
+} syscell_stack_map SEC(".maps");
 
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
@@ -801,8 +808,13 @@ int raw_tracepoint__sys_exit(struct bpf_raw_tracepoint_args *ctx)
     struct self_t *self = CHECK_NULL(bpf_map_lookup_elem(&self_map, &zero));
 
     struct bpf_pidns_info nsdata;
+
+    // 取得與 self 相同 PID namespace 下的 pid 和 tgid
+    // namespace 是以檔案形式存在的特殊對象，需要使用 device id 來指定檔案系統和 inode 指定檔案，才能定位到唯一的 namespace
     long error = bpf_get_ns_current_pid_tgid(self->dev, self->ino, &nsdata, sizeof(nsdata));
-    if  (error == -22) // EINVAL (invalid argument)
+
+    // 若在 namespace 下找不到 process 則會回傳 EINVAL (invalid argument)
+    if  (error == -22)
         return 0;
     else
         CHECK_ERROR(error);
@@ -816,33 +828,35 @@ int raw_tracepoint__sys_exit(struct bpf_raw_tracepoint_args *ctx)
         .syscall_nr = BPF_CORE_READ(regs, orig_ax)
     );
 
-    // 忽略自身的 process
+    // 忽略 self process
     if (event.pid_tgid == self->pid_tgid)
         return 0;
 
-    // 無效的 syscall
+    // 忽略無效的 syscall
     if (event.syscall_nr == -1)
         return 0;
 
-    u64 *ret_map = CHECK_NULL(bpf_map_lookup_elem(event.ret < 0 ? (void *)&negative_ret_map
-                                                                : (void *)&positive_ret_map,
-                                                  &zero));
+    u64  syscell_idx =      event.syscall_nr / (sizeof(u64) * 8 /* bits */);
+    u64  syscell_bit = 1 << event.syscall_nr % (sizeof(u64) * 8 /* bits */);
+    u64 *syscell_map = CHECK_NULL(bpf_map_lookup_elem(event.ret < 0
+        ? (void *)&syscell_fail_map
+        : (void *)&syscell_success_map, &zero));
 
-    u64 syscell_idx =      event.syscall_nr / (sizeof(u64) * 8 /* bits */);
-    u64 syscell_bit = 1 << event.syscall_nr % (sizeof(u64) * 8 /* bits */);
-    
     CHECK_SIZE(syscell_idx, MAX_SYSCALL - 1);
 
-    // 可以考慮再細分成是否要輸出 stack，用 4 個 map 來完成
-    // negative_ret_map positive_ret_map negative_stack_map positive_stack_map
-    if (ret_map[syscell_idx] & syscell_bit)
-    {
-        // 需要印出 stack 時，需要提供 ktime 讓 stack_event 能查詢到對應的資訊
-        event.ktime = bpf_ktime_get_ns();
+    // 如果 syscell map 中，該 bit 尚未設定，則略過此 syscell
+    if (!(syscell_map[syscell_idx] & syscell_bit))
+        return;
 
-        // !!!邏輯錯誤: 即使沒有要輸出 call stack，也應該要能輸出普通的 exit event
+    u64 *stack_map = CHECK_NULL(bpf_map_lookup_elem(&syscell_stack_map, &zero));
+
+    if (stack_map[syscell_idx] & syscell_bit)
+    {
+        // 需要印出 stack 時，需要提供 ktime 來綁定同一次的 exit_event 和 stack_event
+        event.ktime = bpf_ktime_get_ns();
         CHECK_ERROR(bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU,
                                           &event, sizeof(event)));
+
 
 
         // 以下是 vm_area_event 的處理，沿用 sys_exit_event 的 pid_tgid 和 ktime
@@ -864,6 +878,12 @@ int raw_tracepoint__sys_exit(struct bpf_raw_tracepoint_args *ctx)
         bpf_tail_call_static(ctx, &prog_array_map, TAIL_CALL_ZERO);
 
         bpf_printk("bpf_tail_call_static error");
+    }
+    else
+    {
+        // 如果不需要印出 stack，則輸出 ktime = 0 的 event
+        CHECK_ERROR(bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU,
+                                          &event, sizeof(event)));
     }
 
     return 0;

@@ -633,7 +633,7 @@ struct sys_exit_handler
 
         exit_argument argument{event->ret, event->syscall_nr};
 
-        // !!!邏輯錯誤: 目前不會送出普通的 exit event
+        // 可以考慮改用 syscell_stack_map 作為判斷，並且在 event 中都填入 ktime
         if (event->ktime == 0)
             argument.println(event->tgid, event->pid, cpu);
 
@@ -900,7 +900,7 @@ public:
 };
 
 template<typename Container, typename size_type = Container::size_type>
-auto set_ret(Container& container, size_type bit)
+auto set_bit(Container& container, size_type bit)
 {
     using value_type = typename Container::value_type;
 
@@ -977,15 +977,25 @@ int main(int argc, char *argv[])
                                       &self, sizeof(self), BPF_ANY)) < 0)
         throw std::system_error{-error, std::system_category()};
 
-    std::array<__u64, MAX_SYSCALL> negative_ret{};
-    set_ret(negative_ret, SYS_open);
-    set_ret(negative_ret, SYS_openat);
-    set_ret(negative_ret, SYS_openat2);
+    std::array<__u64, MAX_SYSCALL> syscell_fail_map{};
+    set_bit(syscell_fail_map, SYS_open);
+    set_bit(syscell_fail_map, SYS_openat);
+    set_bit(syscell_fail_map, SYS_openat2);
 
-    // update negative_ret to bpf map
-    if ((error = bpf_map__update_elem(skeleton->maps.negative_ret_map,
+    std::array<__u64, MAX_SYSCALL> syscell_stack_map{};
+    set_bit(syscell_stack_map, SYS_open);
+    set_bit(syscell_stack_map, SYS_openat);
+    set_bit(syscell_stack_map, SYS_openat2);
+
+    // update syscell map to bpf
+    if ((error = bpf_map__update_elem(skeleton->maps.syscell_fail_map,
                                       &zero, sizeof(zero),
-                                      std::data(negative_ret), sizeof(negative_ret), BPF_ANY)) < 0)
+                                      std::data(syscell_fail_map), sizeof(syscell_fail_map), BPF_ANY)) < 0)
+        throw std::system_error{-error, std::system_category()};
+
+    if ((error = bpf_map__update_elem(skeleton->maps.syscell_stack_map,
+                                      &zero, sizeof(zero),
+                                      std::data(syscell_stack_map), sizeof(syscell_stack_map), BPF_ANY)) < 0)
         throw std::system_error{-error, std::system_category()};
 
     const char *debug_dirs[] = { "/usr/lib/debug",
