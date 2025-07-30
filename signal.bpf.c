@@ -846,7 +846,7 @@ int raw_tracepoint__sys_exit(struct bpf_raw_tracepoint_args *ctx)
 
     // 如果 syscell map 中，該 bit 尚未設定，則略過此 syscell
     if (!(syscell_map[syscell_idx] & syscell_bit))
-        return;
+        return 0;
 
     u64 *stack_map = CHECK_NULL(bpf_map_lookup_elem(&syscell_stack_map, &zero));
 

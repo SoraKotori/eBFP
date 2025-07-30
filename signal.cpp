@@ -436,7 +436,7 @@ struct read_event_handler
     {
         auto event = static_cast<sys_exit_read_event*>(data);
 
-        auto argument = std::make_shared<read_argument>();
+        auto argument = std::make_shared_for_overwrite<read_argument>();
         argument->ret    = event->ret;
         argument->fd     = event->fd;
         argument->i_mode = event->i_mode;
@@ -726,10 +726,10 @@ struct stack_handler
 
     void operator()(int cpu, void *data, __u32 size)
     {
-        coroutine(cpu, data, size);
+        println(cpu, data, size);
     }
 
-    Task coroutine(int cpu, void *data, __u32 size)
+    Task<promise> println(int cpu, void *data, __u32 size)
     {
         // coroutine 可能會暫停，此時 data 會被釋放，
         // 因此必須先將原始資料複製到 local buffer 中，以確保之後存取依然有效
@@ -790,7 +790,7 @@ struct stack_handler
                 // 而後面的 eBPF 因為前面的 eBPF 已經標記了 path，所以直接認為 path 已經存在，所以先執行完畢
                 // 而實際上要輸出時，第一次的 path 還在處理，導致找不到 path
 
-                __u64 path_ktime = 0;
+                __u64 path_ktime;
                 if (auto error = bpf_map__lookup_elem(path_map_,
                                                       &find_area->path, sizeof(find_area->path),
                                                       &path_ktime, sizeof(path_ktime), 0))
