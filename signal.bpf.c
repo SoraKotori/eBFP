@@ -255,19 +255,19 @@ long output_path(void *ctx, const struct path *path)
     struct path_event *event = RETURN_NULL(bpf_map_lookup_elem(&path_buffer, &zero));
 
     event->base.event_id = EVENT_ID(path_event);
+    event->pid_tgid      = bpf_get_current_pid_tgid();
     event->path          = *path;
     event->index         = RETURN_ERROR(read_path(event->name, path));
 
-    // 更新 ktime 用來計算 event output 之後，需要多久時間 user space 才會接收到 event
-    event->ktime         = bpf_ktime_get_ns();
-
+    // 如果 event output 失敗，則 ktime 不會被更新
     RETURN_ERROR(bpf_perf_event_output(
         ctx, &events, BPF_F_CURRENT_CPU, event,
         offsetof(struct path_event, name) + MAX_ARG_LEN - MAX_NAME_LEN));
 
-    // 更新 ktime 到 map 中，即便 event 尚未送達，user space 也可以檢查 event 是否送出
-    // 如果 event output 失敗，則不會更新 ktime
-    RETURN_ERROR(bpf_map_update_elem(&path_map, path, &event->ktime, BPF_EXIST));
+    // 更新 ktime 用來計算 event output 之後，需要多久時間 user space 才會接收到 event，
+    // 即便 event 尚未送達，user space 也可以檢查 event 是否送出
+    __u64 ktime = bpf_ktime_get_ns();
+    RETURN_ERROR(bpf_map_update_elem(&path_map, path, &ktime, BPF_EXIST));
 
     return 0;
 }

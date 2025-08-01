@@ -118,8 +118,8 @@ struct path_event
 {
     struct event_base base;
 
+    PID_TGID_UNION;
     struct path path;
-    __u64 ktime;
     __u32 index;
     char name[MAX_ARG_LEN];
 };

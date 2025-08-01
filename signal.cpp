@@ -321,6 +321,61 @@ public:
     }
 };
 
+struct path_event_handler : public std::unordered_map<struct path, std::string, path_hash>
+{
+    const struct bpf_map *bpf_path_map_;
+    bool print_name_ = true;
+
+    auto ktime(const struct path &path, unsigned long long flags = 0) const
+    {
+        __u64 ktime;
+        if (auto error = bpf_map__lookup_elem(bpf_path_map_,
+                                              &path, sizeof(path),
+                                              &ktime, sizeof(ktime), flags))
+            throw std::system_error{-error, std::system_category(), "bpf_map__lookup_elem"};
+
+        return ktime;
+    }
+
+    void operator()(int cpu, void *data, __u32 size)
+    {
+        auto event = static_cast<path_event*>(data);
+
+        std::string_view name{
+            event->name + event->index,
+            event->name + MAX_ARG_LEN - MAX_NAME_LEN};
+
+        // 用 path 當 key 插入從 event 取得的 path name
+        auto [iterator, inserted] = try_emplace(event->path, name);
+
+        // 如果 path 被重複插入時，印出 old/new name 的警告訊息
+        if (!inserted)
+        {
+            std::println("warning: path_event_handler.try_emplace.inserted == false\n"
+                         "    old name: {}\n"
+                         "    new name: {}", iterator->second, name);
+            return;
+        }
+
+        if (print_name_)
+        {
+            struct timespec tp;
+            if (clock_gettime(CLOCK_MONOTONIC, &tp) < 0)
+                throw std::system_error{errno, std::system_category(), "clock_gettime"};
+
+            auto path_ktime = ktime(event->path);
+            std::println("pid: {:>6}, tid: {:>6}, path,    cpu: {}, latency: {}, mnt: {:p}, dentry: {:p}, name: \"{}\"",
+                         event->tgid,
+                         event->pid,
+                         cpu,
+                         tp.tv_sec * 1'000'000'000 + tp.tv_nsec - path_ktime,
+                         event->path.mnt,
+                         event->path.dentry,
+                         name);
+        }
+    }
+};
+
 // read_argument: 用於蒐集同一次 read() 呼叫的參數與緩衝區內容
 // 在同一個 eBPF 程式中，sys_exit_read 會先送出回傳值 (buffer 大小)
 // 接著 sys_enter_read 再負責將實際讀取的內容填入 buffer
@@ -339,7 +394,7 @@ struct read_argument : public std::enable_shared_from_this<read_argument>
     static constexpr std::string_view elf_magic{"\177ELF"};
 
     Task<promise> println(__u32 tgid, __u32 pid, int cpu,
-                          const std::unordered_map<struct path, std::string, path_hash>& names_map) const
+                          const path_event_handler& path_handler) const
     {
         // 保持 *this 存活直到 coroutine 的生命週期結束
         [[maybe_unused]] auto self = shared_from_this();
@@ -374,8 +429,8 @@ struct read_argument : public std::enable_shared_from_this<read_argument>
         if (S_ISVTX & i_mode) permission[9] = (i_mode & S_IXOTH) ? 't' : 'T';
 
         // path_event 可能尚未到達，導致 names_map 查不到路徑名稱
-        auto path_iterator = names_map.find(path);
-        auto path_name = path_iterator == std::end(names_map)
+        auto path_iterator = path_handler.find(path);
+        auto path_name = path_iterator == std::end(path_handler)
             ? std::string_view{"not find path"}
             : std::string_view{path_iterator->second};
 
@@ -400,7 +455,7 @@ struct read_argument : public std::enable_shared_from_this<read_argument>
 
 struct read_event_handler
 {
-    const std::unordered_map<path, std::string, path_hash>& names_map_;
+    const path_event_handler& path_handler_;
     __u32 context;
 
     std::unordered_map<__u64, std::shared_ptr<read_argument>> map_;
@@ -428,7 +483,7 @@ struct read_event_handler
         {
             // 由於 buffer 會占用大量的記憶體，因此需要先提取釋放
             auto node = map_.extract(iterator);
-            node.mapped()->println(event->tgid, event->pid, cpu, names_map_);
+            node.mapped()->println(event->tgid, event->pid, cpu, path_handler_);
         }
     }
 
@@ -456,54 +511,7 @@ struct read_event_handler
         {
             // 若 read_context 設為 false 或沒有 context 可以讀取，
             // 則不會傳送 enter event，提前印出 argument
-            argument->println(event->tgid, event->pid, cpu, names_map_);
-        }
-    }
-};
-
-struct path_event_handler
-{
-    std::unordered_map<path, std::string, path_hash>& names_map_;
-    bool print_path_ = true;
-
-    void operator()(int cpu, void *data, __u32 size)
-    {
-        auto event = static_cast<path_event*>(data);
-
-        std::string_view path_name{
-            event->name + event->index,
-            event->name + MAX_ARG_LEN - MAX_NAME_LEN};
-
-        // 用 path 當 key 插入從 event 取得的 path name
-        auto [iterator, inserted] = names_map_.try_emplace(event->path, path_name);
-
-        // 如果 path 被重複插入時，印出 old/new path 的警告訊息
-        if (!inserted)
-        {
-            std::println("warning: names_map_.try_emplace.inserted == false\n"
-                         "    old path: {}\n"
-                         "    new path: {}", iterator->second, path_name);
-            return;
-        }
-
-        if (print_path_)
-        {
-            struct timespec tp;
-            if (clock_gettime(CLOCK_MONOTONIC, &tp) < 0)
-            {
-                std::system_error error{errno, std::system_category()};
-                std::println("warning: clock_gettime, code: {}, what: {}",
-                             error.code().value(),
-                             error.what());
-                return;
-            }
-
-            std::println("    cpu: {}, path: {}, latency: {}, mnt: {:p}, dentry: {:p}",
-                         cpu,
-                         path_name,
-                         tp.tv_sec * 1'000'000'000 + tp.tv_nsec - event->ktime,
-                         event->path.mnt,
-                         event->path.dentry);
+            argument->println(event->tgid, event->pid, cpu, path_handler_);
         }
     }
 };
@@ -717,12 +725,11 @@ struct stack_handler
     blaze_normalizer* normalizer_;
     blaze_symbolizer* symbolizer_;
     const std::unordered_map<__u64, std::set<vm_area_event::vm_area, vm_area_comp>>& vm_area_map_;
-    const std::unordered_map<path,  std::string, path_hash>& names_map_;
+    const path_event_handler& path_handler_;
 
     // 應該考慮更通用的結構來保存首段輸出的內容，像是 std::unordered_map<__u64, std::osyncstream>
     // 或是 std::function 跟 coroutine 的方法延遲生成輸出內容
     std::unordered_map<__u64, exit_argument>& exit_map_;
-    bpf_map *path_map_;
 
     void operator()(int cpu, void *data, __u32 size)
     {
@@ -783,24 +790,14 @@ struct stack_handler
                 continue;
             }
 
-            auto find_path = names_map_.find(find_area->path);
-            if  (find_path == std::end(names_map_))
+            auto find_path = path_handler_.find(find_area->path);
+            if  (find_path == std::end(path_handler_))
             {
                 // 因為前面的 eBPF 還在執行 vm_area_tailcall 和 path_tailcall，因為遇到許多第一次的 path
                 // 而後面的 eBPF 因為前面的 eBPF 已經標記了 path，所以直接認為 path 已經存在，所以先執行完畢
                 // 而實際上要輸出時，第一次的 path 還在處理，導致找不到 path
 
-                __u64 path_ktime;
-                if (auto error = bpf_map__lookup_elem(path_map_,
-                                                      &find_area->path, sizeof(find_area->path),
-                                                      &path_ktime, sizeof(path_ktime), 0))
-                {
-                    std::system_error system_error{-error, std::system_category()};
-                    std::println("    elf: bpf_map__lookup_elem failed, code: {}, what: {}",
-                                 system_error.code().value(),
-                                 system_error.what());
-                    continue;
-                }
+                auto path_ktime = path_handler_.ktime(find_area->path);
 
                 std::println("    elf: not find path, elf_off: {:>#10x}, "
                              "cpu: {}, latency: {}, "
@@ -934,29 +931,29 @@ int main(int argc, char *argv[])
         // 開啟要寫入的檔案（O_WRONLY 為寫入模式，O_CREAT 如果檔案不存在就建立它，O_TRUNC 為清空檔案內容
         int fd = open(argv[1], O_WRONLY | O_CREAT | O_TRUNC, 0666);
         if (fd < 0)
-            throw std::system_error{errno, std::system_category()};
+            throw std::system_error{errno, std::system_category(), "open"};
 
         if (dup3(fd, STDOUT_FILENO, 0) < 0)
-            throw std::system_error{errno, std::system_category()};
+            throw std::system_error{errno, std::system_category(), "dup3"};
 
         if (dup3(fd, STDERR_FILENO, 0) < 0)
-            throw std::system_error{errno, std::system_category()};
+            throw std::system_error{errno, std::system_category(), "dup3"};
 
         if (close(fd) < 0)
-            throw std::system_error{errno, std::system_category()};
+            throw std::system_error{errno, std::system_category(), "close"};
     }
 
     if (SIG_ERR == std::signal(SIGINT,  signal_handler))
-        throw std::system_error{errno, std::system_category()};
+        throw std::system_error{errno, std::system_category(), "std::signal"};
 
     if (SIG_ERR == std::signal(SIGTERM, signal_handler))
-        throw std::system_error{errno, std::system_category()};
+        throw std::system_error{errno, std::system_category(), "std::signal"};
 
     // open and load eBPF skeleton
     auto skeleton = std::unique_ptr<signal_bpf,        decltype(&signal_bpf::destroy)>{
                                     signal_bpf::open_and_load(), signal_bpf::destroy};
     if (!skeleton)
-        throw std::system_error{-errno, std::system_category()};
+        throw std::system_error{-errno, std::system_category(), "signal_bpf::open_and_load"};
 
     const __u32 zero = 0;
     char pattern[MAX_ARG_LEN] = "";
@@ -966,18 +963,18 @@ int main(int argc, char *argv[])
     if ((error = bpf_map__update_elem(skeleton->maps.command_pattern,
                                       &zero, sizeof(zero),
                                       pattern, sizeof(pattern), BPF_ANY)) < 0)
-        throw std::system_error{-error, std::system_category()};
+        throw std::system_error{-error, std::system_category(), "bpf_map__update_elem"};
 
     // update read_content flag to bpf map
     __u32 context = false;
     if ((error = bpf_map__update_elem(skeleton->maps.read_content,
                                       &zero, sizeof(zero),
                                       &context, sizeof(context), BPF_ANY)) < 0)
-        throw std::system_error{-error, std::system_category()};
+        throw std::system_error{-error, std::system_category(), "bpf_map__update_elem"};
 
     struct stat st{};
     if ((error = stat("/proc/self/ns/pid", &st)) < 0)
-        throw std::system_error{-error, std::system_category()};
+        throw std::system_error{-error, std::system_category(), "stat"};
 
     self_t self =
     {
@@ -991,7 +988,7 @@ int main(int argc, char *argv[])
     if ((error = bpf_map__update_elem(skeleton->maps.self_map,
                                       &zero, sizeof(zero),
                                       &self, sizeof(self), BPF_ANY)) < 0)
-        throw std::system_error{-error, std::system_category()};
+        throw std::system_error{-error, std::system_category(), "bpf_map__update_elem"};
 
     std::array<__u64, MAX_SYSCALL> syscell_fail_map{};
     set_bit(syscell_fail_map, SYS_open);
@@ -1007,12 +1004,12 @@ int main(int argc, char *argv[])
     if ((error = bpf_map__update_elem(skeleton->maps.syscell_fail_map,
                                       &zero, sizeof(zero),
                                       std::data(syscell_fail_map), sizeof(syscell_fail_map), BPF_ANY)) < 0)
-        throw std::system_error{-error, std::system_category()};
+        throw std::system_error{-error, std::system_category(), "bpf_map__update_elem"};
 
     if ((error = bpf_map__update_elem(skeleton->maps.syscell_stack_map,
                                       &zero, sizeof(zero),
                                       std::data(syscell_stack_map), sizeof(syscell_stack_map), BPF_ANY)) < 0)
-        throw std::system_error{-error, std::system_category()};
+        throw std::system_error{-error, std::system_category(), "bpf_map__update_elem"};
 
     const char *debug_dirs[] = { "/usr/lib/debug",
                                  "/lib/debug",
@@ -1051,10 +1048,11 @@ int main(int argc, char *argv[])
     if (!normalizer)
         throw std::runtime_error(blaze_err_str(blaze_err_last()));
 
-    std::unordered_map<path, std::string, path_hash> names_map;
+    path_event_handler   path_handler{ .bpf_path_map_ = skeleton->maps.path_map };
+
     execve_event_handler execve_handler;
     kill_event_handler   kill_handler;
-    read_event_handler   read_handler{ .names_map_ = names_map, .context = context };
+    read_event_handler   read_handler{ .path_handler_ = path_handler, .context = context };
     std::unordered_map<__u64, std::set<vm_area_event::vm_area, vm_area_comp>> vm_area_map;
     std::unordered_map<__u64, exit_argument> exit_map;
 
@@ -1065,9 +1063,9 @@ int main(int argc, char *argv[])
     handler[EVENT_ID(sys_exit_kill_event)]      = std::bind_front(&kill_event_handler::exit,    &kill_handler);
     handler[EVENT_ID(sys_enter_read_event)]     = std::bind_front(&read_event_handler::enter,   &read_handler);
     handler[EVENT_ID(sys_exit_read_event)]      = std::bind_front(&read_event_handler::exit,    &read_handler);
-    handler[EVENT_ID(path_event)]               = path_event_handler{names_map};
+    handler[EVENT_ID(path_event)]               = std::ref(path_handler);
     handler[EVENT_ID(vm_area_event)]            = vm_area_handler{vm_area_map, false, false, 32};
-    handler[EVENT_ID(stack_event)]              = stack_handler{normalizer.get(), symbolizer.get(), vm_area_map, names_map, exit_map, skeleton->maps.path_map};
+    handler[EVENT_ID(stack_event)]              = stack_handler{normalizer.get(), symbolizer.get(), vm_area_map, path_handler, exit_map };
     handler[EVENT_ID(sched_process_exit_event)] = handle_sched_process_exit;
     handler[EVENT_ID(do_coredump_event)]        = do_coredump_handler{};
     handler[EVENT_ID(sys_exit_event)]           = sys_exit_handler{exit_map};
@@ -1086,7 +1084,7 @@ int main(int argc, char *argv[])
                           &pb_opts),
          perf_buffer__free};
     if (!perf_buffer_ptr)
-        throw std::system_error{-errno, std::system_category(), "Failed to create perf buffer"};
+        throw std::system_error{-errno, std::system_category(), "perf_buffer__new"};
 
     bool attach_read = true;
     bpf_program__set_autoattach(skeleton->progs.tracepoint__syscalls__sys_enter_read, attach_read);
@@ -1098,7 +1096,7 @@ int main(int argc, char *argv[])
 
     // attach eBPF 程式到對應的 tracepoint
     if ((error = signal_bpf::attach(skeleton.get())) < 0)
-        throw std::system_error{-error, std::system_category()};
+        throw std::system_error{-error, std::system_category()}, "signal_bpf::attach";
 
     std::println("Successfully started! Ctrl+C to stop.");
 
@@ -1109,7 +1107,7 @@ int main(int argc, char *argv[])
     {
         auto count = perf_buffer__poll(perf_buffer_ptr.get(), 100 /* ms */);
         if  (count < 0 && count != -EINTR)
-            throw std::system_error{-count, std::system_category(), "Error polling perf buffer"};
+            throw std::system_error{-count, std::system_category(), "perf_buffer__poll"};
 
         auto time = std::chrono::system_clock::now();
         if  (time > next_time)
