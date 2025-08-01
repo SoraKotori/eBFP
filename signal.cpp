@@ -86,7 +86,7 @@ void print_stack_trace(blaze_normalizer* normalizer,
     //     blaze_user_output_free};
     // if (!output)
     // {
-    //     std::println("blaze_normalize_user_addrs_opts: {}", blaze_err_str(blaze_err_last()));
+    //     std::println(std::cout, "blaze_normalize_user_addrs_opts: {}", blaze_err_str(blaze_err_last()));
     //     return;
     // }
 
@@ -96,20 +96,20 @@ void print_stack_trace(blaze_normalizer* normalizer,
 
     //     if      (meta.kind == blaze_user_meta_kind::BLAZE_USER_META_UNKNOWN)
     //     {
-    //         std::println("    {:>2}, abs_addr: {:>#18x}, {}",
+    //         std::println(std::cout, "    {:>2}, abs_addr: {:>#18x}, {}",
     //             i, addrs[i],
     //             blaze_normalize_reason_str(meta.variant.unknown.reason));
     //     }
     //     else if (meta.kind == blaze_user_meta_kind::BLAZE_USER_META_APK)
     //     {
-    //         std::println("    {:>2}, abs_addr: {:>#18x}, apk: {:40} apk_off: {:>#10x}",
+    //         std::println(std::cout, "    {:>2}, abs_addr: {:>#18x}, apk: {:40} apk_off: {:>#10x}",
     //             i, addrs[i],
     //             std::format("\"{}\"", meta.variant.apk.path),
     //             output->outputs[i].output);
     //     }
     //     else if (meta.kind == blaze_user_meta_kind::BLAZE_USER_META_ELF)
     //     {
-    //         std::print("    {:>2}, abs_addr: {:>#18x}, elf: {:40} elf_off: {:>#10x}",
+    //         std::print(std::cout, "    {:>2}, abs_addr: {:>#18x}, elf: {:40} elf_off: {:>#10x}",
     //             i, addrs[i],
     //             std::format("\"{}\"", meta.variant.elf.path),
     //             output->outputs[i].output);
@@ -134,16 +134,16 @@ void print_stack_trace(blaze_normalizer* normalizer,
     //         {
     //             const auto& sym = syms->syms[0];
     //             if (sym.reason)
-    //                 std::print(", \"{}\"", blaze_symbolize_reason_str(sym.reason));
+    //                 std::print(std::cout, ", \"{}\"", blaze_symbolize_reason_str(sym.reason));
     //             else
     //             {
-    //                 std::print(", sym: {}, sym_addr: {:#010x}, sym_off: {:#010x}",
+    //                 std::print(std::cout, ", sym: {}, sym_addr: {:#010x}, sym_off: {:#010x}",
     //                     sym.name,
     //                     sym.addr,
     //                     sym.offset);
 
     //                 if (sym.code_info.file)
-    //                     std::print(", file: {}:{}:{}",
+    //                     std::print(std::cout, ", file: {}:{}:{}",
     //                         sym.code_info.file,
     //                         sym.code_info.line,
     //                         sym.code_info.column);
@@ -151,10 +151,10 @@ void print_stack_trace(blaze_normalizer* normalizer,
     //         }
     //         else
     //         {
-    //             std::print(", {}", blaze_err_str(blaze_err_last()));
+    //             std::print(std::cout, ", {}", blaze_err_str(blaze_err_last()));
     //         }
 
-    //         std::println();
+    //         std::println(std::cout);
     //     }
     // }
 
@@ -177,10 +177,10 @@ void print_stack_trace(blaze_normalizer* normalizer,
         blaze_syms_free};
     if (!syms)
     {
-        std::println("blaze_symbolize_process_abs_addrs: {}", blaze_err_str(blaze_err_last()));
+        std::println(std::cout, "blaze_symbolize_process_abs_addrs: {}", blaze_err_str(blaze_err_last()));
 
         for(std::size_t i = 0; i < std::size(addrs); i++)
-            std::println("    #{:<2} {:#014x}", i, addrs[i]);
+            std::println(std::cout, "    #{:<2} {:#014x}", i, addrs[i]);
 
         return;
     }
@@ -190,14 +190,14 @@ void print_stack_trace(blaze_normalizer* normalizer,
 
     for(std::size_t i = 0; i < std::size(addrs); i++)
     {
-        std::print("    #{:<2} {:#014x} in {:<20}",
+        std::print(std::cout, "    #{:<2} {:#014x} in {:<20}",
             i, addrs[i],
             syms->syms[i].name ? syms->syms[i].name : "null");
 
         if (syms->syms[i].reason)
-            std::println(" {}", blaze_symbolize_reason_str(syms->syms[i].reason));
+            std::println(std::cout, " {}", blaze_symbolize_reason_str(syms->syms[i].reason));
         else
-            std::println(" sym_addr: {:#014x}, sym_off: {:#010x}, name: {}:{}:{}",
+            std::println(std::cout, " sym_addr: {:#014x}, sym_off: {:#010x}, name: {}:{}:{}",
                 syms->syms[i].addr,
                 syms->syms[i].offset,
                 syms->syms[i].code_info.file ? syms->syms[i].code_info.file : "null",
@@ -214,11 +214,11 @@ struct execve_argument
 
     auto println(__u32 tgid, __u32 pid, int cpu) const
     {
-        std::println("pid: {:>6}, tid: {:>6}, execve, cpu: {}, ret: {:>5}, argc: {}, argv: {}",
-                     tgid, pid, cpu, ret.value(), argc.value(), argv);
+        std::println(std::cout, "pid: {:>6}, tid: {:>6}, execve,  cpu: {}, ret: {:>5}, argc: {}, argv: {}",
+            tgid, pid, cpu, ret.value(), argc.value(), argv);
         
         if (argc.value() == MAX_ARGV_UNROLL)
-            std::println("warning: execve argv count reached limit ({}), possible truncation", MAX_ARGV_UNROLL);
+            std::println(std::cout, "warning: execve argv count reached limit ({}), possible truncation", MAX_ARGV_UNROLL);
     }
 };
 
@@ -239,8 +239,8 @@ public:
                 // eBPF 會把 argv 分多段傳送
                 argument.argv.emplace_back(event->argv_i, event->argv_i_size - 1);
             else
-                std::println("pid: {:>6}, tid: {:>6}, execve, cpu: {}, warning: argv out of order",
-                             event->tgid, event->pid, cpu);
+                std::println(std::cout, "pid: {:>6}, tid: {:>6}, execve, cpu: {}, warning: argv out of order",
+                    event->tgid, event->pid, cpu);
         else
         {
             // 當最後一個 enter 事件的大小等於零，代表 argv 已經傳送完畢，
@@ -284,8 +284,8 @@ struct kill_argument
 
     auto println(__u32 tgid, __u32 pid, int cpu) const
     {
-        std::println("pid: {:>6}, tid: {:>6}, kill,    ret: {:>5}, target pid: {}, signal: {}",
-                     tgid, pid, ret.value(), target_pid, signal.value());
+        std::println(std::cout, "pid: {:>6}, tid: {:>6}, kill,    ret: {:>5}, target pid: {}, signal: {}",
+            tgid, pid, ret.value(), target_pid, signal.value());
     }
 };
 
@@ -354,14 +354,14 @@ struct path_event_handler : public std::unordered_map<struct path, std::string, 
                 throw std::system_error{errno, std::system_category(), "clock_gettime"};
 
             auto path_ktime = ktime(event->path);
-            std::println("pid: {:>6}, tid: {:>6}, path,    cpu: {}, latency: {}, mnt: {:p}, dentry: {:p}, name: \"{}\"",
-                         event->tgid,
-                         event->pid,
-                         cpu,
-                         tp.tv_sec * 1'000'000'000 + tp.tv_nsec - path_ktime,
-                         event->path.mnt,
-                         event->path.dentry,
-                         name);
+            std::println(std::cout, "pid: {:>6}, tid: {:>6}, path,    cpu: {}, latency: {}, mnt: {:p}, dentry: {:p}, name: \"{}\"",
+                event->tgid,
+                event->pid,
+                cpu,
+                tp.tv_sec * 1'000'000'000 + tp.tv_nsec - path_ktime,
+                event->path.mnt,
+                event->path.dentry,
+                name);
         }
 
         // 用 path 當 key 插入從 event 取得的 path name
@@ -369,9 +369,10 @@ struct path_event_handler : public std::unordered_map<struct path, std::string, 
 
         // 如果 path 被重複插入時，印出 old/new name 的警告訊息
         if (!inserted)
-            std::println("warning: path_event_handler.try_emplace.inserted == false\n"
-                         "    old name: {}\n"
-                         "    new name: {}", iterator->second, name);
+            std::println(std::cout,
+                "warning: path_event_handler.try_emplace.inserted == false\n"
+                "    old name: {}\n"
+                "    new name: {}", iterator->second, name);
     }
 };
 
@@ -433,8 +434,8 @@ struct read_argument : public std::enable_shared_from_this<read_argument>
             ? std::string_view{"not find path"}
             : std::string_view{path_iterator->second};
 
-        std::println("pid: {:>6}, tid: {:>6}, read,    ret: {:>5}, fd: {:>3}, {} ({}), name: \"{}\"",
-                     tgid, pid, ret, fd, permission, mode, path_name);
+        std::println(std::cout, "pid: {:>6}, tid: {:>6}, read,    ret: {:>5}, fd: {:>3}, {} ({}), name: \"{}\"",
+            tgid, pid, ret, fd, permission, mode, path_name);
 
         // 若有讀取到 context，並且不是 ELF 檔，則輸出文字內容
         if (std::size(buffer) &&
@@ -442,10 +443,10 @@ struct read_argument : public std::enable_shared_from_this<read_argument>
         {
             // 如果 context 超出上限，就截斷並印出警告
             if (ret > max_size)
-                std::println("warning: read size {} exceeds limit {}, truncating to {}",
-                             ret, max_size, max_size);
+                std::println(std::cout, "warning: read size {} exceeds limit {}, truncating to {}",
+                    ret, max_size, max_size);
 
-            std::println("{}", std::string_view{std::begin(buffer), std::end(buffer)});
+            std::println(std::cout, "{}", std::string_view{std::begin(buffer), std::end(buffer)});
         }
 
         co_return;
@@ -469,7 +470,7 @@ struct read_event_handler
         {
             // 先執行的 exit 已經插入 ktime 在 map 中了，
             // 並且與 enter 在相同的 eBPF 程式中，理論上不會有 out-of-order 的情況
-            std::println("warning: read_argument not found for ktime {}", event->ktime);
+            std::println(std::cout, "warning: read_argument not found for ktime {}", event->ktime);
             return;
         }
 
@@ -504,7 +505,7 @@ struct read_event_handler
             // 用 ktime 當 key 綁定同一次 read 的 enter/exit
             if (map_.try_emplace(event->ktime, std::move(argument)).second == false)
                 // ktime 重複的情況理論上不應該發生
-                std::println("warning: failed to insert read_argument for ktime {}", event->ktime);
+                std::println(std::cout, "warning: failed to insert read_argument for ktime {}", event->ktime);
         }
         else
         {
@@ -575,20 +576,20 @@ public:
 
         // 可考慮把這兩段 std::println 的呼叫移到 vm_area_argument 內處理。
         if (print_event_)
-            std::println("pid: {:>6}, tid: {:>6}, vm_area, cpu: {}, size: {}",
-                         event->tgid,
-                         event->pid,
-                         cpu,
-                         std::size(areas));
+            std::println(std::cout, "pid: {:>6}, tid: {:>6}, vm_area, cpu: {}, size: {}",
+                event->tgid,
+                event->pid,
+                cpu,
+                std::size(areas));
 
         if (print_area_)
             for (const auto& entry : areas)
-                std::println("    start: {:#x}, end: {:#x}, pgoff: {:#x}, mnt: {:p}, dentry: {:p}",
-                             entry.vm_start,
-                             entry.vm_end,
-                             entry.vm_pgoff * 4096,
-                             entry.path.mnt,
-                             entry.path.dentry);
+                std::println(std::cout, "    start: {:#x}, end: {:#x}, pgoff: {:#x}, mnt: {:p}, dentry: {:p}",
+                    entry.vm_start,
+                    entry.vm_end,
+                    entry.vm_pgoff * 4096,
+                    entry.path.mnt,
+                    entry.path.dentry);
     }
 };
 
@@ -596,17 +597,17 @@ void handle_sched_process_exit(int cpu, void *data, __u32 size)
 {
     auto event = static_cast<sched_process_exit_event*>(data);
 
-    std::print("pid: {:>6}, tid: {:>6}, ",
+    std::print(std::cout, "pid: {:>6}, tid: {:>6}, ",
         event->tgid, // pid
         event->pid); // tid
 
     auto status = event->exit_code;
 
     if (WIFEXITED(status))
-        std::println("exited,  ret: {:>5}", WEXITSTATUS(status));
+        std::println(std::cout, "exited,  ret: {:>5}", WEXITSTATUS(status));
 
     else if (WIFSIGNALED(status))
-        std::println("killed,  ret: {:>5} SIG{} ({}){}",
+        std::println(std::cout, "killed,  ret: {:>5} SIG{} ({}){}",
             WTERMSIG(status),
             sigabbrev_np(WTERMSIG(status)) ? sigabbrev_np(WTERMSIG(status)) : "null",
             sigdescr_np (WTERMSIG(status)) ? sigdescr_np (WTERMSIG(status)) : "null",
@@ -628,8 +629,8 @@ struct exit_argument
 
     auto println(__u32 tgid, __u32 pid, int cpu) const
     {
-        std::println("pid: {:>6}, tid: {:>6}, syscall, cpu: {}, ret: {:>5}, number: {}",
-                     tgid, pid, cpu, ret, syscall_nr);
+        std::println(std::cout, "pid: {:>6}, tid: {:>6}, syscall, cpu: {}, ret: {:>5}, number: {}",
+            tgid, pid, cpu, ret, syscall_nr);
     }
 };
 
@@ -649,7 +650,7 @@ struct sys_exit_handler
 
         else if (map_.try_emplace(event->ktime, std::move(argument)).second == false)
             // ktime 重複的情況理論上不應該發生
-            std::println("warning: failed to insert exit_argument for ktime {}", event->ktime);
+            std::println(std::cout, "warning: failed to insert exit_argument for ktime {}", event->ktime);
     }
 };
 
@@ -698,7 +699,7 @@ struct do_mmap_handler
         //                                           event->pgoff,
         //                                           event->path);
 
-        // std::println("    "
+        // std::println(std::cout, "    "
         //     "tgid: {}, "
         //     "pid: {}, "
         //     "addr: {:x}, "
@@ -767,7 +768,7 @@ struct stack_handler
                 // addr: 0x000000f22ec4 elf: /root/.vscode-server/extensions/ms-vscode.cpptools-1.24.5-linux-x64/bin/cpptools-srv elf_off:   0xb22ec4, sym: std::__basic_file<char>::open(char const*, std::_Ios_Openmode, int), sym_addr: 0x00f22e90, sym_off: 0x00000034, file: basic_file.cc:260:16
                 // warning: not find area, start: 0x7ffd9d5e7000, end: 0x7ffd9d5e9000, addr: 0x2567646573257325
                 // 有時候會出現很大的 stack address
-                std::println("warning: not find area, addr: {:#x}, start: {:#x}, end: {:#x}",
+                std::println(std::cout, "warning: not find area, addr: {:#x}, start: {:#x}, end: {:#x}",
                     key.vm_start,
                     find_area->vm_start,
                     find_area->vm_end);
@@ -779,13 +780,12 @@ struct stack_handler
 
             if (find_area->path == path{})
             {
-                std::println("    elf: anonymous mapping, "
-                             "elf_off: {:>#10x}, "
-                             "addr: {:#x}, start: {:#x}, end: {:#x}",
-                             elf_off,
-                             addr,
-                             find_area->vm_start,
-                             find_area->vm_end);
+                std::println(std::cout, "    "
+                    "elf: anonymous mapping, elf_off: {:>#10x}, addr: {:#x}, start: {:#x}, end: {:#x}",
+                    elf_off,
+                    addr,
+                    find_area->vm_start,
+                    find_area->vm_end);
                 continue;
             }
 
@@ -798,21 +798,22 @@ struct stack_handler
 
                 auto path_ktime = path_handler_.ktime(find_area->path);
 
-                std::println("    elf: not find path, elf_off: {:>#10x}, "
-                             "cpu: {}, latency: {}, "
-                             "addr: {:#x}, start: {:#x}, end: {:#x}, mnt: {:p}, dentry: {:p}",
-                             elf_off,
-                             cpu,
-                             static_cast<__s64>(event->ktime - path_ktime),
-                             addr,
-                             find_area->vm_start,
-                             find_area->vm_end,
-                             find_area->path.mnt,
-                             find_area->path.dentry);
+                std::println(std::cout, "    "
+                    "elf: not find path, elf_off: {:>#10x}, cpu: {}, latency: {}, "
+                    "addr: {:#x}, start: {:#x}, end: {:#x}, mnt: {:p}, dentry: {:p}",
+                    elf_off,
+                    cpu,
+                    static_cast<__s64>(event->ktime - path_ktime),
+                    addr,
+                    find_area->vm_start,
+                    find_area->vm_end,
+                    find_area->path.mnt,
+                    find_area->path.dentry);
                 continue;
             }
 
-            std::print("    elf: {:40} elf_off: {:>#10x}",
+            std::print(std::cout, "    "
+                "elf: {:40} elf_off: {:>#10x}",
                 find_path->second,
                 elf_off);
 
@@ -834,16 +835,16 @@ struct stack_handler
             {
                 const auto& sym = syms->syms[0];
                 if (sym.reason)
-                    std::print(", sym: {}", blaze_symbolize_reason_str(sym.reason));
+                    std::print(std::cout, ", sym: {}", blaze_symbolize_reason_str(sym.reason));
                 else
                 {
-                    std::print(", sym: {}, sym_addr: {:#010x}, sym_off: {:#010x}",
+                    std::print(std::cout, ", sym: {}, sym_addr: {:#010x}, sym_off: {:#010x}",
                         sym.name,
                         sym.addr,
                         sym.offset);
 
                     if (sym.code_info.file)
-                        std::print(", file: {}:{}:{}",
+                        std::print(std::cout, ", file: {}:{}:{}",
                             sym.code_info.file,
                             sym.code_info.line,
                             sym.code_info.column);
@@ -851,10 +852,10 @@ struct stack_handler
             }
             else
             {
-                std::print(", {}", blaze_err_str(blaze_err_last()));
+                std::print(std::cout, ", {}", blaze_err_str(blaze_err_last()));
             }
 
-            std::println();
+            std::println(std::cout);
         }
 
         co_return;
@@ -907,7 +908,7 @@ public:
 
     static constexpr void lost(void *ctx, int cpu, __u64 cnt) noexcept
     {
-        std::println("warning: lost event, cpu: {}, cnt: {}", cpu, cnt);
+        std::println(std::cout, "warning: lost event, cpu: {}, cnt: {}", cpu, cnt);
     }
 };
 
@@ -1097,7 +1098,7 @@ int main(int argc, char *argv[])
     if ((error = signal_bpf::attach(skeleton.get())) < 0)
         throw std::system_error{-error, std::system_category()}, "signal_bpf::attach";
 
-    std::println("Successfully started! Ctrl+C to stop.");
+    std::println(std::cout, "Successfully started! Ctrl+C to stop.");
 
     auto next_time = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
 
@@ -1111,11 +1112,11 @@ int main(int argc, char *argv[])
         auto time = std::chrono::system_clock::now();
         if  (time > next_time)
         {
-            std::println("time: {}, handled event: {}", time, handler.event_count());
+            std::println(std::cout, "time: {}, handled event: {}", time, handler.event_count());
             next_time += std::chrono::seconds{1};
         }
     }
 
-    std::println("Stopped. Exiting normally.");
+    std::println(std::cout, "Stopped. Exiting normally.");
     return 0;
 }
