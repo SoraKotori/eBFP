@@ -341,21 +341,11 @@ struct path_event_handler : public std::unordered_map<struct path, std::string, 
     {
         auto event = static_cast<path_event*>(data);
 
-        std::string_view name{
-            event->name + event->index,
-            event->name + MAX_ARG_LEN - MAX_NAME_LEN};
-
-        // 用 path 當 key 插入從 event 取得的 path name
-        auto [iterator, inserted] = try_emplace(event->path, name);
-
-        // 如果 path 被重複插入時，印出 old/new name 的警告訊息
-        if (!inserted)
+        std::string_view name
         {
-            std::println("warning: path_event_handler.try_emplace.inserted == false\n"
-                         "    old name: {}\n"
-                         "    new name: {}", iterator->second, name);
-            return;
-        }
+            event->name + event->index,
+            event->name + MAX_ARG_LEN - MAX_NAME_LEN
+        };
 
         if (print_name_)
         {
@@ -373,6 +363,15 @@ struct path_event_handler : public std::unordered_map<struct path, std::string, 
                          event->path.dentry,
                          name);
         }
+
+        // 用 path 當 key 插入從 event 取得的 path name
+        auto [iterator, inserted] = try_emplace(event->path, name);
+
+        // 如果 path 被重複插入時，印出 old/new name 的警告訊息
+        if (!inserted)
+            std::println("warning: path_event_handler.try_emplace.inserted == false\n"
+                         "    old name: {}\n"
+                         "    new name: {}", iterator->second, name);
     }
 };
 
