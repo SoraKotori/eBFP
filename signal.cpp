@@ -15,6 +15,8 @@
 #include <set>
 #include <chrono>
 #include <type_traits>
+#include <cstring>
+#include <syncstream>
 
 #include <sys/wait.h>
 #include <sys/stat.h>
@@ -214,9 +216,14 @@ struct execve_argument
 
     auto println(__u32 tgid, __u32 pid, int cpu) const
     {
-        std::println(std::cout, "pid: {:>6}, tid: {:>6}, execve,  cpu: {}, ret: {:>5}, argc: {}, argv: {}",
-            tgid, pid, cpu, ret.value(), argc.value(), argv);
-        
+        std::print(std::cout, "pid: {:>6}, tid: {:>6}, execve,  cpu: {}, ret: {:>5}, argc: {}, argv: [\"{}\"",
+            tgid, pid, cpu, ret.value(), argc.value(), argv.front());
+
+        for (const auto& arg : argv | std::views::drop(1))
+            std::print(std::cout, ", \"{}\"", arg);
+
+        std::println(std::cout, "]");
+
         if (argc.value() == MAX_ARGV_UNROLL)
             std::println(std::cout, "warning: execve argv count reached limit ({}), possible truncation", MAX_ARGV_UNROLL);
     }
@@ -750,6 +757,10 @@ struct stack_handler
         const auto& areas = vm_area_map_.at(event->pid_tgid);
         const auto  addrs = std::span<unsigned long>{event->addrs, event->addr_size};
 
+        // coroutine 可能中途暫停，若直接對 std::cout 輸出，容易與其他輸出互相交錯
+        // 因此先將所有輸出暫存到 std::osyncstream，在其 destructor 時再一次性寫入 std::cout
+        std::osyncstream ostream{std::cout};
+
         for (const auto& addr : addrs)
         {
             vm_area_event::vm_area key = { .vm_start = addr };
@@ -768,7 +779,7 @@ struct stack_handler
                 // addr: 0x000000f22ec4 elf: /root/.vscode-server/extensions/ms-vscode.cpptools-1.24.5-linux-x64/bin/cpptools-srv elf_off:   0xb22ec4, sym: std::__basic_file<char>::open(char const*, std::_Ios_Openmode, int), sym_addr: 0x00f22e90, sym_off: 0x00000034, file: basic_file.cc:260:16
                 // warning: not find area, start: 0x7ffd9d5e7000, end: 0x7ffd9d5e9000, addr: 0x2567646573257325
                 // 有時候會出現很大的 stack address
-                std::println(std::cout, "warning: not find area, addr: {:#x}, start: {:#x}, end: {:#x}",
+                std::println(ostream, "warning: not find area, addr: {:#x}, start: {:#x}, end: {:#x}",
                     key.vm_start,
                     find_area->vm_start,
                     find_area->vm_end);
@@ -780,7 +791,7 @@ struct stack_handler
 
             if (find_area->path == path{})
             {
-                std::println(std::cout, "    "
+                std::println(ostream, "    "
                     "elf: anonymous mapping, elf_off: {:>#10x}, addr: {:#x}, start: {:#x}, end: {:#x}",
                     elf_off,
                     addr,
@@ -798,7 +809,7 @@ struct stack_handler
 
                 auto path_ktime = path_handler_.ktime(find_area->path);
 
-                std::println(std::cout, "    "
+                std::println(ostream, "    "
                     "elf: not find path, elf_off: {:>#10x}, cpu: {}, latency: {}, "
                     "addr: {:#x}, start: {:#x}, end: {:#x}, mnt: {:p}, dentry: {:p}",
                     elf_off,
@@ -812,7 +823,7 @@ struct stack_handler
                 continue;
             }
 
-            std::print(std::cout, "    "
+            std::print(ostream, "    "
                 "elf: {:40} elf_off: {:>#10x}",
                 find_path->second,
                 elf_off);
@@ -835,16 +846,16 @@ struct stack_handler
             {
                 const auto& sym = syms->syms[0];
                 if (sym.reason)
-                    std::print(std::cout, ", sym: {}", blaze_symbolize_reason_str(sym.reason));
+                    std::print(ostream, ", sym: {}", blaze_symbolize_reason_str(sym.reason));
                 else
                 {
-                    std::print(std::cout, ", sym: {}, sym_addr: {:#010x}, sym_off: {:#010x}",
+                    std::print(ostream, ", sym: {}, sym_addr: {:#010x}, sym_off: {:#010x}",
                         sym.name,
                         sym.addr,
                         sym.offset);
 
                     if (sym.code_info.file)
-                        std::print(std::cout, ", file: {}:{}:{}",
+                        std::print(ostream, ", file: {}:{}:{}",
                             sym.code_info.file,
                             sym.code_info.line,
                             sym.code_info.column);
@@ -852,10 +863,10 @@ struct stack_handler
             }
             else
             {
-                std::print(std::cout, ", {}", blaze_err_str(blaze_err_last()));
+                std::print(ostream, ", {}", blaze_err_str(blaze_err_last()));
             }
 
-            std::println(std::cout);
+            std::println(ostream);
         }
 
         co_return;
@@ -1096,11 +1107,11 @@ int main(int argc, char *argv[])
 
     // attach eBPF 程式到對應的 tracepoint
     if ((error = signal_bpf::attach(skeleton.get())) < 0)
-        throw std::system_error{-error, std::system_category()}, "signal_bpf::attach";
+        throw std::system_error{-error, std::system_category(), "signal_bpf::attach"};
 
     std::println(std::cout, "Successfully started! Ctrl+C to stop.");
 
-    auto next_time = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
+    auto next_time = std::chrono::system_clock::now();
 
     // 進入 poll loop
     while (!g_signal_status)
