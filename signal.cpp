@@ -628,37 +628,41 @@ struct do_coredump_handler
     }
 };
 
-struct exit_argument
+struct exit_event_handler
 {
-    long ret;
-    long syscall_nr;
+    std::unordered_map<__u64, std::osyncstream>& osyncstream_map_;
 
-    auto println(std::ostream &ostream, __u32 tgid, __u32 pid, int cpu) const
+    auto println(std::ostream &ostream, int cpu, const sys_exit_event *event) const
     {
         std::println(ostream, "pid: {:>6}, tid: {:>6}, syscall, cpu: {}, ret: {:>5}, number: {}",
-            tgid, pid, cpu, ret, syscall_nr);
+            event->tgid,
+            event->pid,
+            cpu,
+            event->ret,
+            event->syscall_nr);
     }
-};
-
-struct sys_exit_handler
-{
-    std::unordered_map<__u64, exit_argument>& map_;
 
     void operator()(int cpu, void *data, __u32 size)
     {
         auto event = static_cast<sys_exit_event*>(data);
 
-        exit_argument argument{event->ret, event->syscall_nr};
-
-        // 若 ktime == 0，則代表後面沒有串接其他 event 可以直接印出訊息
+        // 若 ktime != 0，則代表後續接了其他的 event 所以需要先保存訊息之後再由其他 event 處理
         // 可以考慮改用 syscell_stack_map 作為判斷，並且在 event 中都填入 ktime
-        if (event->ktime == 0)
-            argument.println(std::cout, event->tgid, event->pid, cpu);
+        if (event->ktime)
+        {
+            auto [iterator, inserted] = osyncstream_map_.try_emplace(event->ktime, std::cout);
 
-        // 後續接了其他的 event 所以需要先保存 argument 之後再由其他 event 處理
-        else if (map_.try_emplace(event->ktime, std::move(argument)).second == false)
             // ktime 重複的情況理論上不應該發生
-            std::println(std::cout, "warning: failed to insert exit_argument for ktime {}", event->ktime);
+            if (!inserted)
+                std::println(iterator->second,"warning: failed to insert exit_argument for ktime {}", event->ktime);
+
+            println(iterator->second, cpu, event);
+        }
+        // 若 ktime == 0，則代表後面沒有串接其他 event 可以直接印出訊息
+        else
+        {
+            println(std::cout, cpu, event);
+        }
     }
 };
 
@@ -735,9 +739,8 @@ struct stack_handler
     const std::unordered_map<__u64, std::set<vm_area_event::vm_area, vm_area_comp>>& vm_area_map_;
     path_event_handler& path_handler_;
 
-    // 應該考慮更通用的結構來保存首段輸出的內容，像是 std::unordered_map<__u64, std::osyncstream>
-    // 或是 std::function 跟 coroutine 的方法延遲生成輸出內容
-    std::unordered_map<__u64, exit_argument>& exit_map_;
+    // 次佳方案可能是用 std::function 或 coroutine 的方法延遲生成輸出內容
+    std::unordered_map<__u64, std::osyncstream>& osyncstream_map_;
 
     void operator()(int cpu, void *data, __u32 size)
     {
@@ -753,11 +756,9 @@ struct stack_handler
         std::memcpy(event, data, size);
 
         // coroutine 可能中途暫停，若直接對 std::cout 輸出，容易與其他輸出互相交錯
-        // 因此先將所有輸出暫存到 std::osyncstream，在其 destructor 時再一次性寫入 std::cout
-        std::osyncstream ostream{std::cout};
-
-        auto node = exit_map_.extract(event->ktime);
-        node.mapped().println(ostream, event->tgid, event->pid, cpu);
+        // 因此先將所有輸出暫存到 std::osyncstream，推遲到 destructor 在一次性地寫入
+        auto  node = osyncstream_map_.extract(event->ktime);
+        auto& ostream = node.mapped();
 
         const auto& areas = vm_area_map_.at(event->pid_tgid);
         const auto  addrs = std::span<unsigned long>{event->addrs, event->addr_size};
@@ -1060,13 +1061,14 @@ int main(int argc, char *argv[])
     if (!normalizer)
         throw std::runtime_error(blaze_err_str(blaze_err_last()));
 
+    std::unordered_map<__u64, std::osyncstream> osyncstream_map;
+
     path_event_handler   path_handler{ .bpf_path_map_ = skeleton->maps.path_map };
 
     execve_event_handler execve_handler;
     kill_event_handler   kill_handler;
     read_event_handler   read_handler{ .path_handler_ = path_handler, .context = context };
     std::unordered_map<__u64, std::set<vm_area_event::vm_area, vm_area_comp>> vm_area_map;
-    std::unordered_map<__u64, exit_argument> exit_map;
 
     event_handler<EVENT_MAX> handler;
     handler[EVENT_ID(sys_enter_execve_event)]   = std::bind_front(&execve_event_handler::enter, &execve_handler);
@@ -1077,10 +1079,10 @@ int main(int argc, char *argv[])
     handler[EVENT_ID(sys_exit_read_event)]      = std::bind_front(&read_event_handler::exit,    &read_handler);
     handler[EVENT_ID(path_event)]               = std::ref(path_handler);
     handler[EVENT_ID(vm_area_event)]            = vm_area_handler{vm_area_map, false, false, 32};
-    handler[EVENT_ID(stack_event)]              = stack_handler{normalizer.get(), symbolizer.get(), vm_area_map, path_handler, exit_map };
+    handler[EVENT_ID(stack_event)]              = stack_handler{normalizer.get(), symbolizer.get(), vm_area_map, path_handler, osyncstream_map };
     handler[EVENT_ID(sched_process_exit_event)] = handle_sched_process_exit;
     handler[EVENT_ID(do_coredump_event)]        = do_coredump_handler{};
-    handler[EVENT_ID(sys_exit_event)]           = sys_exit_handler{exit_map};
+    handler[EVENT_ID(sys_exit_event)]           = exit_event_handler{osyncstream_map};
     handler[EVENT_ID(do_mmap_event)]            = do_mmap_handler{vm_area_map};
 
     // perf buffer 選項
