@@ -84,10 +84,10 @@ struct promise
  * 否則回傳 std::noop_coroutine()，表示沒有要 resume 的 coroutine。
  *
  * @tparam Promise        coroutine 的 promise_type
- * @param resume_handle   [in,out] 保存上一輪待 resume 的 handle，會被新的等待者取代
- * @param waiting_handle  [in,out] 保存與 key 對應的等待 coroutine handle，會被 current_handle 取代
- * @param current_handle  [in]     目前呼叫 await_suspend 的 coroutine handle (rvalue)
- * @return std::coroutine_handle<> 下一個要 resume 的 coroutine handle，若無則為 noop
+ * @param  resume_handle   [in,out] 保存上一輪待 resume 的 handle，會被新的等待者取代
+ * @param  waiting_handle  [in,out] 保存與 key 對應的等待 coroutine handle，會被 current_handle 取代
+ * @param  current_handle  [in]     目前呼叫 await_suspend 的 coroutine handle (rvalue)
+ * @return std::coroutine_handle<>  下一個要 resume 的 coroutine handle，若無則為 noop
  */
 template<typename Promise>
 std::coroutine_handle<> chain_coroutines(std::coroutine_handle<Promise>&   resume_handle,
@@ -221,6 +221,18 @@ public:
         return pair;
     }
 
+    /**
+     * @brief 非同步查找：如果鍵不存在，就在 coroutines_ 裡建立一個等待者
+     *
+     * 注意：此函式不能是 const 的，因為
+     *  1. 當 key 不在 map_ 中時，會呼叫 `coroutines_[key]`，這等同於對 `coroutines_` 進行插入/修改操作
+     *  2. 需要修改內部的 coroutine waiting map (`coroutines_`)，以記錄這個 coroutine 的 handle
+     *  3. 這些操作都改變了物件的狀態，與 const 方法保證不變性的要求相衝突。
+     *
+     * @tparam Key       要查找的鍵型別
+     * @param  key [in]  鍵的參考
+     * @return awaitable 回傳一個 awaitable，會在元素就緒時 resume 對應的 coroutine
+     */
     template<typename Key>
     auto async_find(const Key& key)
     {
