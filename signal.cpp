@@ -328,7 +328,7 @@ public:
     }
 };
 
-struct path_event_handler : public std::unordered_map<struct path, std::string, path_hash>
+struct path_event_handler : public waitable_map<std::unordered_map, struct path, std::string, path_hash>
 {
     const struct bpf_map *bpf_path_map_;
     bool print_name_ = true;
@@ -401,7 +401,7 @@ struct read_argument : public std::enable_shared_from_this<read_argument>
     static constexpr std::string_view elf_magic{"\177ELF"};
 
     Task<promise> println(__u32 tgid, __u32 pid, int cpu,
-                          const path_event_handler& path_handler) const
+                          path_event_handler& path_handler) const
     {
         // 保持 *this 存活直到 coroutine 的生命週期結束
         [[maybe_unused]] auto self = shared_from_this();
@@ -435,14 +435,13 @@ struct read_argument : public std::enable_shared_from_this<read_argument>
         if (S_ISGID & i_mode) permission[6] = (i_mode & S_IXGRP) ? 's' : 'S';
         if (S_ISVTX & i_mode) permission[9] = (i_mode & S_IXOTH) ? 't' : 'T';
 
-        // path_event 可能尚未到達，導致 names_map 查不到路徑名稱
-        auto path_iterator = path_handler.find(path);
-        auto path_name = path_iterator == std::end(path_handler)
-            ? std::string_view{"not find path"}
-            : std::string_view{path_iterator->second};
+        // eBPF 在 path_tailcall 階段，會對首次出現的 path 先在 map 中設置 flag，然後才處理該 path。
+        // 而本次 event 的 path_tailcall 會跳過已設 flag 的 path，但該 path 仍可能在其他 event 中處理。  
+        // 因此必須等到其他 event 處理完畢並將 path 插入 map 後，再進行查找。
+        auto path_iterator = co_await path_handler.async_find(path);
 
         std::println(std::cout, "pid: {:>6}, tid: {:>6}, read,    ret: {:>5}, fd: {:>3}, {} ({}), name: \"{}\"",
-            tgid, pid, ret, fd, permission, mode, path_name);
+            tgid, pid, ret, fd, permission, mode, path_iterator->second);
 
         // 若有讀取到 context，並且不是 ELF 檔，則輸出文字內容
         if (std::size(buffer) &&
@@ -462,7 +461,7 @@ struct read_argument : public std::enable_shared_from_this<read_argument>
 
 struct read_event_handler
 {
-    const path_event_handler& path_handler_;
+    path_event_handler& path_handler_;
     __u32 context;
 
     std::unordered_map<__u64, std::shared_ptr<read_argument>> map_;
@@ -634,9 +633,9 @@ struct exit_argument
     long ret;
     long syscall_nr;
 
-    auto println(__u32 tgid, __u32 pid, int cpu) const
+    auto println(std::ostream &ostream, __u32 tgid, __u32 pid, int cpu) const
     {
-        std::println(std::cout, "pid: {:>6}, tid: {:>6}, syscall, cpu: {}, ret: {:>5}, number: {}",
+        std::println(ostream, "pid: {:>6}, tid: {:>6}, syscall, cpu: {}, ret: {:>5}, number: {}",
             tgid, pid, cpu, ret, syscall_nr);
     }
 };
@@ -651,10 +650,12 @@ struct sys_exit_handler
 
         exit_argument argument{event->ret, event->syscall_nr};
 
+        // 若 ktime == 0，則代表後面沒有串接其他 event 可以直接印出訊息
         // 可以考慮改用 syscell_stack_map 作為判斷，並且在 event 中都填入 ktime
         if (event->ktime == 0)
-            argument.println(event->tgid, event->pid, cpu);
+            argument.println(std::cout, event->tgid, event->pid, cpu);
 
+        // 後續接了其他的 event 所以需要先保存 argument 之後再由其他 event 處理
         else if (map_.try_emplace(event->ktime, std::move(argument)).second == false)
             // ktime 重複的情況理論上不應該發生
             std::println(std::cout, "warning: failed to insert exit_argument for ktime {}", event->ktime);
@@ -732,7 +733,7 @@ struct stack_handler
     blaze_normalizer* normalizer_;
     blaze_symbolizer* symbolizer_;
     const std::unordered_map<__u64, std::set<vm_area_event::vm_area, vm_area_comp>>& vm_area_map_;
-    const path_event_handler& path_handler_;
+    path_event_handler& path_handler_;
 
     // 應該考慮更通用的結構來保存首段輸出的內容，像是 std::unordered_map<__u64, std::osyncstream>
     // 或是 std::function 跟 coroutine 的方法延遲生成輸出內容
@@ -751,16 +752,15 @@ struct stack_handler
         auto event  = reinterpret_cast<stack_event*>(buffer.get());
         std::memcpy(event, data, size);
 
-        auto node = exit_map_.extract(event->ktime);
-        node.mapped().println(event->tgid, event->pid, cpu);
-
-        const auto& areas = vm_area_map_.at(event->pid_tgid);
-        const auto  addrs = std::span<unsigned long>{event->addrs, event->addr_size};
-
         // coroutine 可能中途暫停，若直接對 std::cout 輸出，容易與其他輸出互相交錯
         // 因此先將所有輸出暫存到 std::osyncstream，在其 destructor 時再一次性寫入 std::cout
         std::osyncstream ostream{std::cout};
 
+        auto node = exit_map_.extract(event->ktime);
+        node.mapped().println(ostream, event->tgid, event->pid, cpu);
+
+        const auto& areas = vm_area_map_.at(event->pid_tgid);
+        const auto  addrs = std::span<unsigned long>{event->addrs, event->addr_size};
         for (const auto& addr : addrs)
         {
             vm_area_event::vm_area key = { .vm_start = addr };
@@ -800,13 +800,14 @@ struct stack_handler
                 continue;
             }
 
-            auto find_path = path_handler_.find(find_area->path);
-            if  (find_path == std::end(path_handler_))
-            {
-                // 因為前面的 eBPF 還在執行 vm_area_tailcall 和 path_tailcall，因為遇到許多第一次的 path
-                // 而後面的 eBPF 因為前面的 eBPF 已經標記了 path，所以直接認為 path 已經存在，所以先執行完畢
-                // 而實際上要輸出時，第一次的 path 還在處理，導致找不到 path
+            // eBPF 在 path_tailcall 階段，會對首次出現的 path 先在 map 中設置 flag，然後才處理該 path。
+            // 而本次 event 的 path_tailcall 會跳過已設 flag 的 path，但該 path 仍可能在其他 event 中處理。  
+            // 因此必須等到其他 event 處理完畢並將 path 插入 map 後，再進行查找。
+            auto path_iterator = co_await path_handler_.async_find(find_area->path);
 
+            // 理論上不太可能沒有找到，因為如果 path 一直沒有被插入，則會卡在 co_await
+            if  (path_iterator == std::end(path_handler_))
+            {
                 auto path_ktime = path_handler_.ktime(find_area->path);
 
                 std::println(ostream, "    "
@@ -825,13 +826,13 @@ struct stack_handler
 
             std::print(ostream, "    "
                 "elf: {:40} elf_off: {:>#10x}",
-                find_path->second,
+                path_iterator->second,
                 elf_off);
 
             blaze_symbolize_src_elf src =
             {
                 .type_size  = sizeof(src),
-                .path       = std::data(find_path->second),
+                .path       = std::data(path_iterator->second),
                 .debug_syms = true
             };
 
