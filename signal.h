@@ -164,9 +164,9 @@ struct do_coredump_event
     struct event_base base;
 
     PID_TGID_UNION;
+    __u64 ktime;
     int si_signo;
     int si_code;
-    __u32 stack_id;
 };
 
 struct sys_exit_event
