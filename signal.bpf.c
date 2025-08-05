@@ -191,6 +191,12 @@ struct EVENT_TYPE name =                  \
     }                          \
 })
 
+#define CHECK_TAIL_CALL_STATIC(ctx, map, slot) \
+({                                             \
+    bpf_tail_call_static(ctx, map, slot);      \
+    bpf_printk(__FILE__ ":" STR(__LINE__) ": bpf_tail_call_static failed: " STR(slot)); \
+})
+
 static __always_inline
 long read_path(char dst[MAX_ARG_LEN], const struct path *path)
 {
@@ -364,15 +370,9 @@ int raw_tracepoint_vm_area(struct bpf_raw_tracepoint_args *ctx)
     CHECK_ERROR(tailcall_vm_area(ctx, &area_i));
 
     if (area_i == MAX_AREA)
-    {
-        bpf_tail_call_static(ctx, &prog_array_map, RAW_TRACEPOINT_VM_AREA);
-        bpf_printk("bpf_tail_call_static error: RAW_TRACEPOINT_VM_AREA");
-    }
+        CHECK_TAIL_CALL_STATIC(ctx, &prog_array_map, RAW_TRACEPOINT_VM_AREA);
     else
-    {
-        bpf_tail_call_static(ctx, &prog_array_map, RAW_TRACEPOINT_PATH);
-        bpf_printk("bpf_tail_call_static error: RAW_TRACEPOINT_PATH");
-    }
+        CHECK_TAIL_CALL_STATIC(ctx, &prog_array_map, RAW_TRACEPOINT_PATH);
 
     return 0;
 }
@@ -384,15 +384,9 @@ int kprobe_vm_area(struct pt_regs *ctx)
     CHECK_ERROR(tailcall_vm_area(ctx, &area_i));
 
     if (area_i == MAX_AREA)
-    {
-        bpf_tail_call_static(ctx, &prog_array_map, KPROBE_VM_AREA);
-        bpf_printk("bpf_tail_call_static error: KPROBE_VM_AREA");
-    }
+        CHECK_TAIL_CALL_STATIC(ctx, &prog_array_map, KPROBE_VM_AREA);
     else
-    {
-        bpf_tail_call_static(ctx, &prog_array_map, KPROBE_PATH);
-        bpf_printk("bpf_tail_call_static error: KPROBE_PATH");
-    }
+        CHECK_TAIL_CALL_STATIC(ctx, &prog_array_map, KPROBE_PATH);
 
     return 0;
 }
@@ -434,15 +428,9 @@ int raw_tracepoint_path(struct bpf_raw_tracepoint_args *ctx)
     CHECK_ERROR(tailcall_path(ctx, &path_i));
 
     if (path_i == MAX_PATH)
-    {
-        bpf_tail_call_static(ctx, &prog_array_map, RAW_TRACEPOINT_PATH);
-        bpf_printk("bpf_tail_call_static error: RAW_TRACEPOINT_PATH");
-    }
+        CHECK_TAIL_CALL_STATIC(ctx, &prog_array_map, RAW_TRACEPOINT_PATH);
     else
-    {
-        bpf_tail_call_static(ctx, &prog_array_map, RAW_TRACEPOINT_STACK);
-        bpf_printk("bpf_tail_call_static error: RAW_TRACEPOINT_STACK");
-    }
+        CHECK_TAIL_CALL_STATIC(ctx, &prog_array_map, RAW_TRACEPOINT_STACK);
 
     return 0;
 }
@@ -454,15 +442,9 @@ int kprobe_path(struct pt_regs *ctx)
     CHECK_ERROR(tailcall_path(ctx, &path_i));
 
     if (path_i == MAX_PATH)
-    {
-        bpf_tail_call_static(ctx, &prog_array_map, KPROBE_PATH);
-        bpf_printk("bpf_tail_call_static error: KPROBE_PATH");
-    }
+        CHECK_TAIL_CALL_STATIC(ctx, &prog_array_map, KPROBE_PATH);
     else
-    {
-        bpf_tail_call_static(ctx, &prog_array_map, KPROBE_STACK);
-        bpf_printk("bpf_tail_call_static error: KPROBE_STACK");
-    }
+        CHECK_TAIL_CALL_STATIC(ctx, &prog_array_map, KPROBE_STACK);
 
     return 0;
 }
@@ -916,8 +898,7 @@ int BPF_KPROBE(kprobe__do_coredump, const kernel_siginfo_t *siginfo)
 
     // 初始化 vm_area_event，使用 pid_tgid 和 ktime 來串接 event
     CHECK_ERROR(init_vm_area_event(event.pid_tgid, event.ktime));
-    bpf_tail_call_static(ctx, &prog_array_map, KPROBE_VM_AREA);
-    bpf_printk("bpf_tail_call_static error: KPROBE_VM_AREA");
+    CHECK_TAIL_CALL_STATIC(ctx, &prog_array_map, KPROBE_VM_AREA);
 
     return 0;
 }
@@ -980,8 +961,7 @@ int raw_tracepoint__sys_exit(struct bpf_raw_tracepoint_args *ctx)
 
         // 初始化 vm_area_event，使用 pid_tgid 和 ktime 來串接 event
         CHECK_ERROR(init_vm_area_event(event.pid_tgid, event.ktime));
-        bpf_tail_call_static(ctx, &prog_array_map, RAW_TRACEPOINT_VM_AREA);
-        bpf_printk("bpf_tail_call_static error: RAW_TRACEPOINT_VM_AREA");
+        CHECK_TAIL_CALL_STATIC(ctx, &prog_array_map, RAW_TRACEPOINT_VM_AREA);
     }
     else
     {
