@@ -114,7 +114,7 @@ int kprobe_stack          (struct pt_regs *);
 
 struct {
     __uint(type, BPF_MAP_TYPE_PROG_ARRAY);
-    __uint(max_entries, 3);
+    __uint(max_entries, 6);
     __uint(key_size, sizeof(u32));
     __array(values, int (void *));
 } prog_array_map SEC(".maps") =
@@ -124,9 +124,9 @@ struct {
         [RAW_TRACEPOINT_VM_AREA] = (void *)&raw_tracepoint_vm_area,
         [RAW_TRACEPOINT_PATH]    = (void *)&raw_tracepoint_path,
         [RAW_TRACEPOINT_STACK]   = (void *)&raw_tracepoint_stack,
-        [KPROBE_VM_AREA]         = (void *)&kprobe_vm_area,
-        [KPROBE_PATH]            = (void *)&kprobe_path,
-        [KPROBE_STACK]           = (void *)&kprobe_stack
+        // [KPROBE_VM_AREA]         = (void *)&kprobe_vm_area,
+        // [KPROBE_PATH]            = (void *)&kprobe_path,
+        // [KPROBE_STACK]           = (void *)&kprobe_stack
     },
 };
 
@@ -377,19 +377,19 @@ int raw_tracepoint_vm_area(struct bpf_raw_tracepoint_args *ctx)
     return 0;
 }
 
-SEC("kprobe")
-int kprobe_vm_area(struct pt_regs *ctx)
-{
-    int area_i;
-    CHECK_ERROR(tailcall_vm_area(ctx, &area_i));
+// SEC("kprobe")
+// int kprobe_vm_area(struct pt_regs *ctx)
+// {
+//     int area_i;
+//     CHECK_ERROR(tailcall_vm_area(ctx, &area_i));
 
-    if (area_i == MAX_AREA)
-        CHECK_TAIL_CALL_STATIC(ctx, &prog_array_map, KPROBE_VM_AREA);
-    else
-        CHECK_TAIL_CALL_STATIC(ctx, &prog_array_map, KPROBE_PATH);
+//     if (area_i == MAX_AREA)
+//         CHECK_TAIL_CALL_STATIC(ctx, &prog_array_map, KPROBE_VM_AREA);
+//     else
+//         CHECK_TAIL_CALL_STATIC(ctx, &prog_array_map, KPROBE_PATH);
 
-    return 0;
-}
+//     return 0;
+// }
 
 #define MAX_PATH 14
 
@@ -417,7 +417,7 @@ long tailcall_path(void *ctx, int *path_i)
         RETURN_ERROR(output_path(ctx, &paths[argument->path_i]));
     }
 
-    path_i = i;
+    *path_i = i;
     return 0;
 }
 
@@ -435,19 +435,19 @@ int raw_tracepoint_path(struct bpf_raw_tracepoint_args *ctx)
     return 0;
 }
 
-SEC("kprobe")
-int kprobe_path(struct pt_regs *ctx)
-{
-    int path_i;
-    CHECK_ERROR(tailcall_path(ctx, &path_i));
+// SEC("kprobe")
+// int kprobe_path(struct pt_regs *ctx)
+// {
+//     int path_i;
+//     CHECK_ERROR(tailcall_path(ctx, &path_i));
 
-    if (path_i == MAX_PATH)
-        CHECK_TAIL_CALL_STATIC(ctx, &prog_array_map, KPROBE_PATH);
-    else
-        CHECK_TAIL_CALL_STATIC(ctx, &prog_array_map, KPROBE_STACK);
+//     if (path_i == MAX_PATH)
+//         CHECK_TAIL_CALL_STATIC(ctx, &prog_array_map, KPROBE_PATH);
+//     else
+//         CHECK_TAIL_CALL_STATIC(ctx, &prog_array_map, KPROBE_STACK);
 
-    return 0;
-}
+//     return 0;
+// }
 
 static __always_inline
 long tailcall_stack(void *ctx)
@@ -481,12 +481,12 @@ int raw_tracepoint_stack(struct bpf_raw_tracepoint_args *ctx)
     return 0;
 }
 
-SEC("kprobe")
-int kprobe_stack(struct pt_regs *ctx)
-{
-    CHECK_ERROR(tailcall_stack(ctx));
-    return 0;
-}
+// SEC("kprobe")
+// int kprobe_stack(struct pt_regs *ctx)
+// {
+//     CHECK_ERROR(tailcall_stack(ctx));
+//     return 0;
+// }
 
 __always_inline
 int pattern_strcmp(const char *const pattern, const char *const arg)
@@ -897,8 +897,8 @@ int BPF_KPROBE(kprobe__do_coredump, const kernel_siginfo_t *siginfo)
                                       &event, sizeof(event)));
 
     // 初始化 vm_area_event，使用 pid_tgid 和 ktime 來串接 event
-    CHECK_ERROR(init_vm_area_event(event.pid_tgid, event.ktime));
-    CHECK_TAIL_CALL_STATIC(ctx, &prog_array_map, KPROBE_VM_AREA);
+    // CHECK_ERROR(init_vm_area_event(event.pid_tgid, event.ktime));
+    // CHECK_TAIL_CALL_STATIC(ctx, &prog_array_map, KPROBE_VM_AREA);
 
     return 0;
 }

@@ -638,20 +638,20 @@ struct do_coredump_handler
     {
         auto event = static_cast<do_coredump_event*>(data);
 
-        // 若 ktime != 0，則代表後續接了其他的 event 所以需要先保存訊息之後再由其他 event 處理
-        // 可以考慮改用 syscell_stack_map 作為判斷，並且在 event 中都填入 ktime
-        if (event->ktime)
-        {
-            auto [iterator, inserted] = osyncstream_map_.try_emplace(event->ktime, std::cout);
+        // // 若 ktime != 0，則代表後續接了其他的 event 所以需要先保存訊息之後再由其他 event 處理
+        // // 可以考慮改用 syscell_stack_map 作為判斷，並且在 event 中都填入 ktime
+        // if (event->ktime)
+        // {
+        //     auto [iterator, inserted] = osyncstream_map_.try_emplace(event->ktime, std::cout);
 
-            // ktime 重複的情況理論上不應該發生
-            if (!inserted)
-                std::println(iterator->second, "warning: failed to insert for ktime {}", event->ktime);
+        //     // ktime 重複的情況理論上不應該發生
+        //     if (!inserted)
+        //         std::println(iterator->second, "warning: failed to insert for ktime {}", event->ktime);
 
-            println(iterator->second, cpu, event);
-        }
-        // 若 ktime == 0，則代表後面沒有串接其他 event 可以直接印出訊息
-        else
+        //     println(iterator->second, cpu, event);
+        // }
+        // // 若 ktime == 0，則代表後面沒有串接其他 event 可以直接印出訊息
+        // else
             println(std::cout, cpu, event);
     }
 };
@@ -1107,7 +1107,7 @@ int main(int argc, char *argv[])
     handler[EVENT_ID(vm_area_event)]            = vm_area_handler{vm_area_map, false, false, 32};
     handler[EVENT_ID(stack_event)]              = stack_handler{normalizer.get(), symbolizer.get(), vm_area_map, path_handler, osyncstream_map };
     handler[EVENT_ID(sched_process_exit_event)] = handle_sched_process_exit;
-    handler[EVENT_ID(do_coredump_event)]        = do_coredump_handler{};
+    handler[EVENT_ID(do_coredump_event)]        = do_coredump_handler{osyncstream_map};
     handler[EVENT_ID(sys_exit_event)]           = exit_event_handler{osyncstream_map};
     handler[EVENT_ID(do_mmap_event)]            = do_mmap_handler{vm_area_map};
 
