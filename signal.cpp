@@ -622,9 +622,37 @@ void handle_sched_process_exit(int cpu, void *data, __u32 size)
 
 struct do_coredump_handler
 {
+    std::unordered_map<__u64, std::osyncstream>& osyncstream_map_;
+
+    auto println(std::ostream &ostream, int cpu, const do_coredump_event *event) const
+    {
+        std::println(ostream, "pid: {:>6}, tid: {:>6}, syscall, cpu: {}, si_signo: {}, si_code: {}",
+            event->tgid,
+            event->pid,
+            cpu,
+            event->si_signo,
+            event->si_code);
+    }
+
     void operator()(int cpu, void *data, __u32 size)
     {
         auto event = static_cast<do_coredump_event*>(data);
+
+        // 若 ktime != 0，則代表後續接了其他的 event 所以需要先保存訊息之後再由其他 event 處理
+        // 可以考慮改用 syscell_stack_map 作為判斷，並且在 event 中都填入 ktime
+        if (event->ktime)
+        {
+            auto [iterator, inserted] = osyncstream_map_.try_emplace(event->ktime, std::cout);
+
+            // ktime 重複的情況理論上不應該發生
+            if (!inserted)
+                std::println(iterator->second, "warning: failed to insert for ktime {}", event->ktime);
+
+            println(iterator->second, cpu, event);
+        }
+        // 若 ktime == 0，則代表後面沒有串接其他 event 可以直接印出訊息
+        else
+            println(std::cout, cpu, event);
     }
 };
 
@@ -654,15 +682,13 @@ struct exit_event_handler
 
             // ktime 重複的情況理論上不應該發生
             if (!inserted)
-                std::println(iterator->second,"warning: failed to insert exit_argument for ktime {}", event->ktime);
+                std::println(iterator->second, "warning: failed to insert for ktime {}", event->ktime);
 
             println(iterator->second, cpu, event);
         }
         // 若 ktime == 0，則代表後面沒有串接其他 event 可以直接印出訊息
         else
-        {
             println(std::cout, cpu, event);
-        }
     }
 };
 
