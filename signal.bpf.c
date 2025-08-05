@@ -98,13 +98,19 @@ struct {
 	__uint(value_size, sizeof(int));
 } events SEC(".maps");
 
-#define TAIL_CALL_ZERO 0
-#define TAIL_CALL_ONE 1
-#define TAIL_CALL_TWO 2
+#define RAW_TRACEPOINT_VM_AREA 0
+#define RAW_TRACEPOINT_PATH    1
+#define RAW_TRACEPOINT_STACK   2
+#define KPROBE_VM_AREA         3
+#define KPROBE_PATH            4
+#define KPROBE_STACK           5
 
-int vm_area_tailcall(struct bpf_raw_tracepoint_args *);
-int path_tailcall(struct bpf_raw_tracepoint_args *);
-int stack_tailcall(struct bpf_raw_tracepoint_args *);
+int raw_tracepoint_vm_area(struct bpf_raw_tracepoint_args *);
+int raw_tracepoint_path   (struct bpf_raw_tracepoint_args *);
+int raw_tracepoint_stack  (struct bpf_raw_tracepoint_args *);
+int kprobe_vm_area        (struct pt_regs *);
+int kprobe_path           (struct pt_regs *);
+int kprobe_stack          (struct pt_regs *);
 
 struct {
     __uint(type, BPF_MAP_TYPE_PROG_ARRAY);
@@ -115,9 +121,12 @@ struct {
 {
     .values =
     {
-        [TAIL_CALL_ZERO] = (void *)&vm_area_tailcall,
-        [TAIL_CALL_ONE]  = (void *)&path_tailcall,
-        [TAIL_CALL_TWO]  = (void *)&stack_tailcall
+        [RAW_TRACEPOINT_VM_AREA] = (void *)&raw_tracepoint_vm_area,
+        [RAW_TRACEPOINT_PATH]    = (void *)&raw_tracepoint_path,
+        [RAW_TRACEPOINT_STACK]   = (void *)&raw_tracepoint_stack,
+        [KPROBE_VM_AREA]         = (void *)&kprobe_vm_area,
+        [KPROBE_PATH]            = (void *)&kprobe_path,
+        [KPROBE_STACK]           = (void *)&kprobe_stack
     },
 };
 
@@ -289,15 +298,15 @@ long try_update_path(void *ctx, const struct path *path)
     return 0;
 }
 
-SEC("raw_tracepoint")
-int vm_area_tailcall(struct bpf_raw_tracepoint_args *ctx)
+static __always_inline
+long tailcall_vm_area(void *ctx, int *area_i)
 {
     const u32 zero = 0;
     const u64 ktime = 0;
 
-    struct vm_area_event    *event    = CHECK_NULL(bpf_map_lookup_elem(&vm_area_buffer, &zero));
-    struct vm_area_argument *argument = CHECK_NULL(bpf_map_lookup_elem(&vm_area_map,    &zero));
-    struct path             *paths    = CHECK_NULL(bpf_map_lookup_elem(&path_percpu,    &zero));
+    struct vm_area_event    *event    = RETURN_NULL(bpf_map_lookup_elem(&vm_area_buffer, &zero));
+    struct vm_area_argument *argument = RETURN_NULL(bpf_map_lookup_elem(&vm_area_map,    &zero));
+    struct path             *paths    = RETURN_NULL(bpf_map_lookup_elem(&path_percpu,    &zero));
     struct file             *file     = NULL;
 
     u32 i, path_i = argument->path_i;
@@ -337,79 +346,143 @@ int vm_area_tailcall(struct bpf_raw_tracepoint_args *ctx)
     }
 
     event->area_size = i;
-    CHECK_ERROR(bpf_perf_event_output(
+    RETURN_ERROR(bpf_perf_event_output(
         ctx, &events, BPF_F_CURRENT_CPU, event,
         offsetof(struct vm_area_event, area[i])));    
 
     argument->path_i = path_i;
     argument->vma    = vma;
+    
+    *area_i = i;
+    return 0;
+}
 
-    if (i == MAX_AREA)
-        bpf_tail_call_static(ctx, &prog_array_map, TAIL_CALL_ZERO);
+SEC("raw_tracepoint")
+int raw_tracepoint_vm_area(struct bpf_raw_tracepoint_args *ctx)
+{
+    int area_i;
+    CHECK_ERROR(tailcall_vm_area(ctx, &area_i));
+
+    if (area_i == MAX_AREA)
+        bpf_tail_call_static(ctx, &prog_array_map, RAW_TRACEPOINT_VM_AREA);
     else
-        bpf_tail_call_static(ctx, &prog_array_map, TAIL_CALL_ONE);
+        bpf_tail_call_static(ctx, &prog_array_map, RAW_TRACEPOINT_PATH);
 
     bpf_printk("bpf_tail_call_static error");
     return 0;
 }
 
-SEC("raw_tracepoint")
-int path_tailcall(struct bpf_raw_tracepoint_args *ctx)
+SEC("kprobe")
+int kprobe_vm_area(struct pt_regs *ctx)
+{
+    int area_i;
+    CHECK_ERROR(tailcall_vm_area(ctx, &area_i));
+
+    if (area_i == MAX_AREA)
+        bpf_tail_call_static(ctx, &prog_array_map, KPROBE_VM_AREA);
+    else
+        bpf_tail_call_static(ctx, &prog_array_map, KPROBE_PATH);
+
+    bpf_printk("bpf_tail_call_static error");
+    return 0;
+}
+
+#define MAX_PATH 14
+
+static __always_inline
+long tailcall_path(void *ctx, int *path_i)
 {
     const u32 zero = 0;
 
-    struct vm_area_argument *argument = CHECK_NULL(bpf_map_lookup_elem(&vm_area_map, &zero));
-    struct path             *paths    = CHECK_NULL(bpf_map_lookup_elem(&path_percpu, &zero));
+    struct vm_area_argument *argument = RETURN_NULL(bpf_map_lookup_elem(&vm_area_map, &zero));
+    struct path             *paths    = RETURN_NULL(bpf_map_lookup_elem(&path_percpu, &zero));
 
-    u32 path_i = argument->path_i;
+    u32 i;
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 3, 0)
     #pragma unroll
 #endif
-    for (u32 i = 0; i < 14; i++)
+    for (i = 0; i < MAX_PATH; i++)
     {
-        if (path_i == 0)
+        if (argument->path_i == 0)
             break;
 
         // struct path* path = bpf_map_lookup_elem(&path_percpu, &path_i);
 
-        path_i = (path_i - 1) & (MAX_AREA - 1);
-        CHECK_ERROR(output_path(ctx, &paths[path_i]));
+        argument->path_i = (argument->path_i - 1) & (MAX_AREA - 1);
+        RETURN_ERROR(output_path(ctx, &paths[argument->path_i]));
     }
 
-    argument->path_i = path_i;
+    path_i = i;
+    return 0;
+}
 
-    if (path_i)
-        bpf_tail_call_static(ctx, &prog_array_map, TAIL_CALL_ONE);
+SEC("raw_tracepoint")
+int raw_tracepoint_path(struct bpf_raw_tracepoint_args *ctx)
+{
+    int path_i;
+    CHECK_ERROR(tailcall_path(ctx, &path_i));
+
+    if (path_i == MAX_PATH)
+        bpf_tail_call_static(ctx, &prog_array_map, RAW_TRACEPOINT_PATH);
     else
-        bpf_tail_call_static(ctx, &prog_array_map, TAIL_CALL_TWO);
+        bpf_tail_call_static(ctx, &prog_array_map, RAW_TRACEPOINT_STACK);
 
     bpf_printk("bpf_tail_call_static error");
     return 0;
 }
 
-SEC("raw_tracepoint")
-int stack_tailcall(struct bpf_raw_tracepoint_args *ctx)
+SEC("kprobe")
+int kprobe_path(struct pt_regs *ctx)
+{
+    int path_i;
+    CHECK_ERROR(tailcall_path(ctx, &path_i));
+
+    if (path_i == MAX_PATH)
+        bpf_tail_call_static(ctx, &prog_array_map, KPROBE_PATH);
+    else
+        bpf_tail_call_static(ctx, &prog_array_map, KPROBE_STACK);
+
+    bpf_printk("bpf_tail_call_static error");
+    return 0;
+}
+
+static __always_inline
+long tailcall_stack(void *ctx)
 {
     const u32 zero = 0;
 
-    struct stack_event   *stack_event   = CHECK_NULL(bpf_map_lookup_elem(&stack_buffer,   &zero));
-    struct vm_area_event *vm_area_event = CHECK_NULL(bpf_map_lookup_elem(&vm_area_buffer, &zero));
+    struct stack_event   *stack_event   = RETURN_NULL(bpf_map_lookup_elem(&stack_buffer,   &zero));
+    struct vm_area_event *vm_area_event = RETURN_NULL(bpf_map_lookup_elem(&vm_area_buffer, &zero));
 
-    long size = CHECK_ERROR(bpf_get_stack(ctx,
-                                          stack_event->addrs,
-                                          sizeof(stack_event->addrs),
-                                          BPF_F_USER_STACK));
+    long size = RETURN_ERROR(bpf_get_stack(ctx,
+                                           stack_event->addrs,
+                                           sizeof(stack_event->addrs),
+                                           BPF_F_USER_STACK));
 
     stack_event->base.event_id = EVENT_ID(stack_event);
     stack_event->pid_tgid      = vm_area_event->pid_tgid;
     stack_event->ktime         = vm_area_event->ktime;
     stack_event->addr_size     = size / sizeof(*stack_event->addrs);
 
-    CHECK_ERROR(bpf_perf_event_output(
+    RETURN_ERROR(bpf_perf_event_output(
         ctx, &events, BPF_F_CURRENT_CPU, stack_event,
         offsetof(struct stack_event, addrs) + size));
 
+    return 0;
+}
+
+SEC("raw_tracepoint")
+int raw_tracepoint_stack(struct bpf_raw_tracepoint_args *ctx)
+{
+    CHECK_ERROR(tailcall_stack(ctx));
+    return 0;
+}
+
+SEC("kprobe")
+int kprobe_stack(struct pt_regs *ctx)
+{
+    CHECK_ERROR(tailcall_stack(ctx));
     return 0;
 }
 
@@ -875,7 +948,7 @@ int raw_tracepoint__sys_exit(struct bpf_raw_tracepoint_args *ctx)
 
         CHECK_ERROR(bpf_map_update_elem(&vm_area_map, &zero, &argument, BPF_ANY));
 
-        bpf_tail_call_static(ctx, &prog_array_map, TAIL_CALL_ZERO);
+        bpf_tail_call_static(ctx, &prog_array_map, RAW_TRACEPOINT_VM_AREA);
 
         bpf_printk("bpf_tail_call_static error");
     }
