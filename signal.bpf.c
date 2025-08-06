@@ -98,47 +98,49 @@ struct {
 	__uint(value_size, sizeof(int));
 } events SEC(".maps");
 
+#define DEFINE_PROG_ARRAY(map_name, entry_count, ...) \
+struct {                                              \
+    __uint(type, BPF_MAP_TYPE_PROG_ARRAY);            \
+    __uint(max_entries, entry_count);                 \
+    __uint(key_size, sizeof(u32));                    \
+    __array(values, int (void *));                    \
+} map_name SEC(".maps") = {                           \
+    .values = { __VA_ARGS__ }                         \
+}
+
+enum {
+    RAW_TRACEPOINT_VM_AREA,
+    RAW_TRACEPOINT_PATH,
+    RAW_TRACEPOINT_STACK,
+    RAW_TRACEPOINT_COUNT
+};
+
 int raw_tracepoint_vm_area(struct bpf_raw_tracepoint_args *);
 int raw_tracepoint_path   (struct bpf_raw_tracepoint_args *);
 int raw_tracepoint_stack  (struct bpf_raw_tracepoint_args *);
-#define RAW_TRACEPOINT_VM_AREA 0
-#define RAW_TRACEPOINT_PATH    1
-#define RAW_TRACEPOINT_STACK   2
-struct {
-    __uint(type, BPF_MAP_TYPE_PROG_ARRAY);
-    __uint(max_entries, 3);
-    __uint(key_size, sizeof(u32));
-    __array(values, int (void *));
-} raw_tracepoint_array_map SEC(".maps") =
-{
-    .values =
-    {
-        [RAW_TRACEPOINT_VM_AREA] = (void *)&raw_tracepoint_vm_area,
-        [RAW_TRACEPOINT_PATH]    = (void *)&raw_tracepoint_path,
-        [RAW_TRACEPOINT_STACK]   = (void *)&raw_tracepoint_stack
-    },
+
+enum {
+    KPROBE_VM_AREA,
+    KPROBE_PATH,
+    KPROBE_STACK,
+    KPROBE_COUNT
 };
 
-#define KPROBE_VM_AREA 0
-#define KPROBE_PATH    1
-#define KPROBE_STACK   2
 int kprobe_vm_area(struct pt_regs *);
 int kprobe_path   (struct pt_regs *);
 int kprobe_stack  (struct pt_regs *);
-struct {
-    __uint(type, BPF_MAP_TYPE_PROG_ARRAY);
-    __uint(max_entries, 3);
-    __uint(key_size, sizeof(u32));
-    __array(values, int (void *));
-} kprobe_array_map SEC(".maps") =
-{
-    .values =
-    {
-        [KPROBE_VM_AREA] = (void *)&kprobe_vm_area,
-        [KPROBE_PATH]    = (void *)&kprobe_path,
-        [KPROBE_STACK]   = (void *)&kprobe_stack
-    },
-};
+
+DEFINE_PROG_ARRAY(raw_tracepoint_array_map, RAW_TRACEPOINT_COUNT,
+    [RAW_TRACEPOINT_VM_AREA] = (void *)&raw_tracepoint_vm_area,
+    [RAW_TRACEPOINT_PATH]    = (void *)&raw_tracepoint_path,
+    [RAW_TRACEPOINT_STACK]   = (void *)&raw_tracepoint_stack
+);
+
+DEFINE_PROG_ARRAY(kprobe_array_map, KPROBE_COUNT,
+    [KPROBE_VM_AREA] = (void *)&kprobe_vm_area,
+    [KPROBE_PATH]    = (void *)&kprobe_path,
+    [KPROBE_STACK]   = (void *)&kprobe_stack
+);
 
 #define INIT_EVENT(name, EVENT_TYPE, ...) \
 struct EVENT_TYPE name =                  \
