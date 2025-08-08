@@ -1,4 +1,4 @@
-#pragma onec
+#pragma once
 
 #define MAX_ARG_LEN 256 // ebpf stack max 512 bytes
 #define MAX_NAME_LEN 64
