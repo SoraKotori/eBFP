@@ -27,6 +27,10 @@ int main()
     map.try_emplace(10, 100);
     map.insert_or_assign(20, 200);
 
+    // Insert a key without any awaiting coroutine to ensure resume guard works
+    map.wait(30); // creates a default handle
+    map.insert_or_assign(30, 300); // should not crash
+
     std::println("done");
     return 0;
 }
