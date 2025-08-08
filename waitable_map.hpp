@@ -197,7 +197,13 @@ public:
             auto handle = std::move(iterator->second);
 
             coroutines_.erase(iterator);
-            handle.resume();
+            // 如果呼叫 resume(key) 前沒有任何 coroutine 等待該 key，
+            // coroutines_[key] 會提供一個預設建構的空 handle。
+            // 只有在 handle 有效時才進行 resume，
+            // 讓使用者可以在不知道是否有等待 coroutine 的情況下直接呼叫 resume(key)，
+            // 保證操作的安全性。
+            if (handle)
+                handle.resume();
         }
     }
 
