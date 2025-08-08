@@ -190,13 +190,13 @@ public:
     template<typename Key>
     auto resume(const Key& key)
     {
-        auto iteraotr  = coroutines_.find(key);
-        if  (iteraotr != coroutines_.end())
+        auto iterator = coroutines_.find(key);
+        if  (iterator != coroutines_.end())
         {
             // 先 move handle 出來再 erase，避免在 resume() 期間插入新元素，導致 iterator 失效
-            auto handle = std::move(iteraotr->second);
+            auto handle = std::move(iterator->second);
 
-            coroutines_.erase(iteraotr);
+            coroutines_.erase(iterator);
             handle.resume();
         }
     }
@@ -205,8 +205,8 @@ public:
     auto insert_or_assign(Key&& key, Mapped&& obj)
     {
         auto pair = map_.insert_or_assign(std::forward<Key>(key), std::forward<Mapped>(obj));
-        if  (pair.second)
-            resume(pair.first->first); // pair.iterator->key
+        // 無論是插入新鍵或更新既有鍵，都嘗試喚醒等待該鍵的 coroutine
+        resume(pair.first->first); // pair.iterator->key
 
         return pair;
     }
