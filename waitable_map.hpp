@@ -39,7 +39,7 @@ struct promise
             // 或考慮將 destroy() 移動到外部處理
             try
             {
-                // 釋放整個 coroutine frame（包含 promise, local coroutine 變數，還有 final_awaiter 本身)
+                // 釋放整個 coroutine frame (包含 promise, local coroutine 變數，還有 final_awaiter 本身)
                 handle.destroy();
             }
             catch(const std::exception& exception)
@@ -196,10 +196,10 @@ public:
     template<typename Key>
     auto resume(const Key& key)
     {
-        // 檢測 coroutine map 是否支援 C++17 node handle（extract）
+        // 檢測 coroutine map 是否支援 C++17 node handle (extract)
         if constexpr (has_extract<coroutine_container_type, Key>)
         {
-            // node-based 容器（std::map / std::unordered_map）會走這裡
+            // node-based 容器 (std::map / std::unordered_map) 會走這裡
             auto node = coroutines_.extract(key);
             if  (node && node.mapped())
                  node.mapped().resume(); // handle.resume()
@@ -227,6 +227,7 @@ public:
     auto insert_or_assign(Key&& key, Mapped&& obj)
     {
         auto pair = map_.insert_or_assign(std::forward<Key>(key), std::forward<Mapped>(obj));
+
         // 無論是插入新鍵或更新既有鍵，都嘗試喚醒等待該鍵的 coroutine
         resume(pair.first->first); // pair.iterator->key
 
