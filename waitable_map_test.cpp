@@ -27,9 +27,9 @@ int main()
     map.try_emplace(10, 100);
     map.insert_or_assign(20, 200);
 
-    // Insert a key without any awaiting coroutine to ensure resume guard works
-    map.wait(30); // creates a default handle
-    map.insert_or_assign(30, 300); // should not crash
+    // 插入一個沒有任何 coroutine 在等待的 key 值，用來驗證 resume 的防護邏輯
+    map.wait(30);                  // 為該 key 建立預設 null handle
+    map.insert_or_assign(30, 300); // 不會觸發 resume 造成未定義的行為
 
     std::println("done");
     return 0;
