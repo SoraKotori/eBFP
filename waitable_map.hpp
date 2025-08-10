@@ -105,6 +105,12 @@ std::coroutine_handle<> chain_coroutines(std::coroutine_handle<Promise>&   resum
     return std::noop_coroutine();
 }
 
+template<typename MapContainer, typename Key>
+concept has_extract = requires(MapContainer &container, const Key &key)
+{
+    container.extract(key);
+};
+
 template<template<typename...> typename MapContainer,
          typename ContainerKey,
          typename T,
@@ -190,14 +196,30 @@ public:
     template<typename Key>
     auto resume(const Key& key)
     {
-        auto iterator = coroutines_.find(key);
-        if  (iterator != coroutines_.end())
+        // 檢測 coroutine map 是否支援 C++17 node handle（extract）
+        if constexpr (has_extract<coroutine_container_type, Key>)
         {
-            // 先 move handle 出來再 erase，避免在 resume() 期間插入新元素，導致 iterator 失效
-            auto handle = std::move(iterator->second);
+            // node-based 容器（std::map / std::unordered_map）會走這裡
+            auto node = coroutines_.extract(key);
+            if  (node && node.mapped())
+                 node.mapped().resume(); // handle.resume()
+        }
+        else
+        {
+            // 非 node-based 容器 (std::flat_map) 走這裡
+            auto iterator  = coroutines_.find(key);
+            if  (iterator != coroutines_.end())
+            {
+                // 先把 handle 移出，再從容器刪除元素
+                // 避免在 resume() 期間若發生插入/刪除造成元素搬移，導致 iterator 失效
+                auto handle = std::move(iterator->second);
+                coroutines_.erase(iterator);
 
-            coroutines_.erase(iterator);
-            handle.resume();
+                // 若 handle 為預設建構 (null)，代表沒有 coroutine 等待該 key
+                // 僅在 handle 有效時才 resume，以避免未定義行為。
+                if (handle)
+                    handle.resume();
+            }
         }
     }
 
