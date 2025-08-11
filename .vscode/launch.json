@@ -37,6 +37,14 @@
                 {
                     "name": "OUTPUT_FILE",
                     "value": "${input:timestamp}.log"
+                },
+                {
+                    "name": "SYSCELL_FAIL",
+                    "value": "open,openat,openat2"
+                },
+                {
+                    "name": "SYSCELL_STACK",
+                    "value": "open,openat,openat2"
                 }
             ],
             "externalConsole": false,

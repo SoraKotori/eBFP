@@ -88,7 +88,6 @@ add_custom_command(
     DEPENDS ${GPERF_INPUT_FILE}
 )
 add_library(syscall_name_to_nr STATIC ${GPERF_OUTPUT_FILE})
-target_include_directories(syscall_name_to_nr INTERFACE ${CMAKE_CURRENT_SOURCE_DIR})
 
 find_package(BpfObject REQUIRED)
 
