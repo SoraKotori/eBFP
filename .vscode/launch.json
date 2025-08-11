@@ -26,15 +26,17 @@
             "type": "cppdbg",
             "request": "launch",
             "program": "${command:cmake.launchTargetPath}",
-            "args": [
-                "${input:timestamp}.log"
-            ],
+            "args": [],
             "stopAtEntry": false,
             "cwd": "${workspaceFolder}",
             "environment": [
                 {
                     "name": "ASAN_OPTIONS",
                     "value": "detect_leaks=0"
+                },
+                {
+                    "name": "OUTPUT_FILE",
+                    "value": "${input:timestamp}.log"
                 }
             ],
             "externalConsole": false,

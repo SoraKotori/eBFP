@@ -959,16 +959,23 @@ auto set_bit(Container& container, size_type bit)
     return container[bit / (sizeof(value_type) * 8)] |= 1 << bit % (sizeof(value_type) * 8);
 }
 
+template<typename Container>
+auto parse_syscalls(Container &container, const char *value)
+{
+    set_bit(container, SYS_open);
+    set_bit(container, SYS_openat);
+    set_bit(container, SYS_openat2);
+}
+
 int main(int argc, char *argv[])
 {
-    bool redirect = argc > 1;
-    if  (redirect)
+    if  (auto env_value = getenv("OUTPUT_FILE"))
     {
         // 關閉同步後，需要使用 stdout 和 stderr 與 C 語言相容
         std::ios::sync_with_stdio(false);
 
         // 開啟要寫入的檔案（O_WRONLY 為寫入模式，O_CREAT 如果檔案不存在就建立它，O_TRUNC 為清空檔案內容
-        int fd = open(argv[1], O_WRONLY | O_CREAT | O_TRUNC, 0666);
+        int fd = open(env_value, O_WRONLY | O_CREAT | O_TRUNC, 0666);
         if (fd < 0)
             throw std::system_error{errno, std::system_category(), "open"};
 
@@ -995,20 +1002,33 @@ int main(int argc, char *argv[])
         throw std::system_error{-errno, std::system_category(), "signal_bpf::open_and_load"};
 
     const __u32 zero = 0;
-    char pattern[MAX_ARG_LEN] = "";
+    char command_pattern[MAX_ARG_LEN] = "";
+
+    if (auto env_value = getenv("COMMAND_PATTERN"))
+    {
+        auto result = std::format_to_n(command_pattern, MAX_ARG_LEN, "{}", env_value);
+        if  (result.size != MAX_ARG_LEN)
+            *result.out = '\0';
+    }
 
     // update pattern to bpf map
     int  error = 0;
     if ((error = bpf_map__update_elem(skeleton->maps.command_pattern,
                                       &zero, sizeof(zero),
-                                      pattern, sizeof(pattern), BPF_ANY)) < 0)
+                                      command_pattern, sizeof(command_pattern), BPF_ANY)) < 0)
         throw std::system_error{-error, std::system_category(), "bpf_map__update_elem"};
 
+    __u32 read_content = false;
+    if (auto env_value = getenv("READ_CONTENT"))
+    {
+        if (std::string_view{"true"}.compare(env_value) == 0)
+            read_content = true;
+    }
+
     // update read_content flag to bpf map
-    __u32 context = false;
     if ((error = bpf_map__update_elem(skeleton->maps.read_content,
                                       &zero, sizeof(zero),
-                                      &context, sizeof(context), BPF_ANY)) < 0)
+                                      &read_content, sizeof(read_content), BPF_ANY)) < 0)
         throw std::system_error{-error, std::system_category(), "bpf_map__update_elem"};
 
     struct stat st{};
@@ -1030,14 +1050,12 @@ int main(int argc, char *argv[])
         throw std::system_error{-error, std::system_category(), "bpf_map__update_elem"};
 
     std::array<__u64, MAX_SYSCALL> syscell_fail_map{};
-    set_bit(syscell_fail_map, SYS_open);
-    set_bit(syscell_fail_map, SYS_openat);
-    set_bit(syscell_fail_map, SYS_openat2);
+    if (auto env_value = getenv("SYSCELL_FAIL"))
+        parse_syscalls(syscell_fail_map, env_value);
 
     std::array<__u64, MAX_SYSCALL> syscell_stack_map{};
-    set_bit(syscell_stack_map, SYS_open);
-    set_bit(syscell_stack_map, SYS_openat);
-    set_bit(syscell_stack_map, SYS_openat2);
+    if (auto env_value = getenv("SYSCELL_STACK"))
+        parse_syscalls(syscell_stack_map, env_value);
 
     // update syscell map to bpf
     if ((error = bpf_map__update_elem(skeleton->maps.syscell_fail_map,
@@ -1093,7 +1111,7 @@ int main(int argc, char *argv[])
 
     execve_event_handler execve_handler;
     kill_event_handler   kill_handler;
-    read_event_handler   read_handler{ .path_handler_ = path_handler, .context = context };
+    read_event_handler   read_handler{ .path_handler_ = path_handler, .context = read_content };
     std::unordered_map<__u64, std::set<vm_area_event::vm_area, vm_area_comp>> vm_area_map;
 
     event_handler<EVENT_MAX> handler;

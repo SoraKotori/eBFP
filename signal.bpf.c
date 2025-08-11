@@ -494,7 +494,7 @@ int kprobe_stack(struct pt_regs *ctx)
 }
 
 __always_inline
-int pattern_strcmp(const char *const pattern, const char *const arg)
+int command_strcmp(const char *const pattern, const char *const arg)
 {
     // 如果 pattern 為空字串，則視為匹配
     if (pattern[0] == '\0')
@@ -562,7 +562,7 @@ int tracepoint__syscalls__sys_enter_execve(struct trace_event_raw_sys_enter *ctx
         bpf_core_read_user_str(event.argv_i, sizeof(event.argv_i), argv_i));
 
     // 如果 argv[0] 與 pattern 比對不符，則直接 return
-    if (pattern_strcmp(pattern, event.argv_i))
+    if (command_strcmp(pattern, event.argv_i))
         return 0;
 
     // 輸出第一次事件
