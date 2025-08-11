@@ -21,6 +21,11 @@ RUN apt-get update && export DEBIAN_FRONTEND=noninteractive && \
 
 RUN cargo install libbpf-cargo
 
+# gperf
+RUN apt-get update && export DEBIAN_FRONTEND=noninteractive && \
+    apt-get -y install --no-install-recommends \
+    gperf
+
 FROM base AS development
 
 RUN apt-get update && export DEBIAN_FRONTEND=noninteractive && \
