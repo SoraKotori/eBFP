@@ -50,6 +50,7 @@ struct path_hash
 #include "signal.h"
 #include "signal.skel.h"
 #include "waitable_map.hpp"
+#include "syscall_name_to_nr.h"
 
 namespace
 {
@@ -956,15 +957,35 @@ auto set_bit(Container& container, size_type bit)
 {
     using value_type = typename Container::value_type;
 
-    return container[bit / (sizeof(value_type) * 8)] |= 1 << bit % (sizeof(value_type) * 8);
+    auto index  = bit / std::numeric_limits<value_type>::digits;
+    auto offset = bit % std::numeric_limits<value_type>::digits;
+
+    container[index] |= value_type{1} << offset;
 }
 
 template<typename Container>
-auto parse_syscalls(Container &container, const char *value)
+auto parse_syscalls(Container &container, std::string_view value)
 {
-    set_bit(container, SYS_open);
-    set_bit(container, SYS_openat);
-    set_bit(container, SYS_openat2);
+    auto is_name_char = [](auto c)
+    {
+        // 需先將型別轉換成 unsigned，否則負數在型別提升時，高位元會被補 1
+        using unsigned_type = std::make_unsigned_t<decltype(c)>;
+
+        return std::islower(static_cast<unsigned_type>(c)) ||
+               std::isdigit(static_cast<unsigned_type>(c)) ||
+               c == '_';
+    };
+
+    for (auto iterator = std::begin(value); iterator != std::end(value);)
+    {
+        auto start = std::find_if(iterator, std::end(value), is_name_char);
+        if  (start == std::end(value))
+            break;
+        iterator = std::find_if_not(start, std::end(value), is_name_char);
+
+        if (auto entry = syscall_name_to_nr(&*start, std::distance(start, iterator)))
+            set_bit(container, entry->nr);
+    }
 }
 
 int main(int argc, char *argv[])
