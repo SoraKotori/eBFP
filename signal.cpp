@@ -21,6 +21,8 @@
 #include <sys/wait.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
+#include <sys/types.h>
+#include <dirent.h>
 
 #include <bpf/libbpf.h>
 #include <blazesym.h>
@@ -1089,12 +1091,26 @@ int main(int argc, char *argv[])
                                       std::data(syscell_stack_map), sizeof(syscell_stack_map), BPF_ANY)) < 0)
         throw std::system_error{-error, std::system_category(), "bpf_map__update_elem"};
 
-    const char *debug_dirs[] = { "/usr/lib/debug",
-                                 "/lib/debug",
-                                 "/usr/lib/debug/.build-id/46",
-                                 "/usr/lib/debug/.build-id/48",
-                                 "/usr/lib/debug/.build-id/6a",
-                                 "/workspaces/eBFP" };
+    const char *debug_dirs[] =
+    {
+        "/usr/lib/debug/.build-id/46",
+        "/usr/lib/debug/.build-id/48",
+        "/usr/lib/debug/.build-id/6a",
+        "/workspaces/eBFP"
+    };
+
+    auto dir = opendir("/usr/lib/debug/.build-id");
+    if (!dir)
+        throw std::system_error{errno, std::system_category(), "opendir"};
+
+    while (auto dirent = readdir(dir))
+    {
+        if (dirent->d_type != DT_DIR)
+            continue;
+    }
+
+    if (closedir(dir) < 0)
+        throw std::system_error{errno, std::system_category(), "closedir"};
 
     blaze_symbolizer_opts symbolizer_opts =
     {
