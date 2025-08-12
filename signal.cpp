@@ -1072,6 +1072,10 @@ int main(int argc, char *argv[])
                                       &self, sizeof(self), BPF_ANY)) < 0)
         throw std::system_error{-error, std::system_category(), "bpf_map__update_elem"};
 
+    std::array<__u64, MAX_SYSCALL> syscell_success_map{};
+    if (auto env_value = getenv("SYSCELL_SUCCESS"))
+        parse_syscalls(syscell_success_map, env_value);
+
     std::array<__u64, MAX_SYSCALL> syscell_fail_map{};
     if (auto env_value = getenv("SYSCELL_FAIL"))
         parse_syscalls(syscell_fail_map, env_value);
@@ -1081,6 +1085,11 @@ int main(int argc, char *argv[])
         parse_syscalls(syscell_stack_map, env_value);
 
     // update syscell map to bpf
+    if ((error = bpf_map__update_elem(skeleton->maps.syscell_success_map,
+                                      &zero, sizeof(zero),
+                                      std::data(syscell_success_map), sizeof(syscell_success_map), BPF_ANY)) < 0)
+        throw std::system_error{-error, std::system_category(), "bpf_map__update_elem"};
+
     if ((error = bpf_map__update_elem(skeleton->maps.syscell_fail_map,
                                       &zero, sizeof(zero),
                                       std::data(syscell_fail_map), sizeof(syscell_fail_map), BPF_ANY)) < 0)

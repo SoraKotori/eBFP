@@ -4,10 +4,11 @@ struct syscall_entry
     int nr;
 };
 
-%includes
-%readonly-tables
 %struct-type
 %define lookup-function-name syscall_name_to_nr
+%compare-strncmp
+%readonly-tables
+%includes
 
 %%
 read,0
