@@ -45,6 +45,14 @@
                 {
                     "name": "SYSCELL_STACK",
                     "value": "open,openat,openat2"
+                },
+                {
+                    "name": "ATTACH_READ",
+                    "value": "true"
+                },
+                {
+                    "name": "ATTACH_MMAP",
+                    "value": "false"
                 }
             ],
             "externalConsole": false,

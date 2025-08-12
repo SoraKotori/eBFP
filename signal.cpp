@@ -1198,11 +1198,23 @@ int main(int argc, char *argv[])
     if (!perf_buffer_ptr)
         throw std::system_error{-errno, std::system_category(), "perf_buffer__new"};
 
-    bool attach_read = true;
+    bool attach_read = false;
+    if (auto env_value = getenv("ATTACH_READ"))
+    {
+        if (std::string_view{"true"}.compare(env_value) == 0)
+            attach_read = true;
+    }
+
     bpf_program__set_autoattach(skeleton->progs.tracepoint__syscalls__sys_enter_read, attach_read);
     bpf_program__set_autoattach(skeleton->progs.tracepoint__syscalls__sys_exit_read,  attach_read);
 
     bool attach_mmap = false;
+    if (auto env_value = getenv("ATTACH_MMAP"))
+    {
+        if (std::string_view{"true"}.compare(env_value) == 0)
+            attach_mmap = true;
+    }
+
     bpf_program__set_autoattach(skeleton->progs.kprobe__do_mmap,    attach_mmap);
     bpf_program__set_autoattach(skeleton->progs.kretprobe__do_mmap, attach_mmap);
 
