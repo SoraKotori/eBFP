@@ -1100,26 +1100,34 @@ int main(int argc, char *argv[])
                                       std::data(syscell_stack_map), sizeof(syscell_stack_map), BPF_ANY)) < 0)
         throw std::system_error{-error, std::system_category(), "bpf_map__update_elem"};
 
-    const char *debug_dirs[] =
-    {
-        "/usr/lib/debug/.build-id/46",
-        "/usr/lib/debug/.build-id/48",
-        "/usr/lib/debug/.build-id/6a",
-        "/workspaces/eBFP"
-    };
+    constexpr std::string_view build_id_dir{"/usr/lib/debug/.build-id"};
 
-    auto dir = opendir("/usr/lib/debug/.build-id");
-    if (!dir)
+    std::vector<std::string> dirent_names;
+    if (auto directory = std::unique_ptr<DIR, decltype(&closedir)>{opendir(std::data(build_id_dir)), closedir})
+    {
+        errno = 0;
+        while (auto dirent = readdir(directory.get()))
+        {
+            if (dirent->d_type != DT_DIR)
+                continue;
+
+            if (dirent->d_name[0] == '.'  &&
+               (dirent->d_name[1] == '\0' ||
+               (dirent->d_name[1] == '.'  &&
+                dirent->d_name[2] == '\0')))
+                continue;
+
+            dirent_names.emplace_back(dirent->d_name);
+        }
+
+        if (errno)
+            throw std::system_error{errno, std::system_category(), "readdir"};
+    }
+    else if (errno != ENOENT)
         throw std::system_error{errno, std::system_category(), "opendir"};
 
-    while (auto dirent = readdir(dir))
-    {
-        if (dirent->d_type != DT_DIR)
-            continue;
-    }
-
-    if (closedir(dir) < 0)
-        throw std::system_error{errno, std::system_category(), "closedir"};
+    std::vector<const char *> debug_dirs(std::size(dirent_names));
+    std::ranges::transform(dirent_names, std::begin(debug_dirs), std::mem_fn(&std::string::c_str));
 
     blaze_symbolizer_opts symbolizer_opts =
     {
