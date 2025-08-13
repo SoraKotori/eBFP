@@ -334,7 +334,7 @@ public:
 struct path_event_handler : public waitable_map<std::unordered_map, struct path, std::string, path_hash>
 {
     const struct bpf_map *bpf_path_map_;
-    bool print_name_ = true;
+    bool print_event_ = true;
 
     auto ktime(const struct path &path, unsigned long long flags = 0) const
     {
@@ -357,7 +357,7 @@ struct path_event_handler : public waitable_map<std::unordered_map, struct path,
             event->name + MAX_ARG_LEN - MAX_NAME_LEN
         };
 
-        if (print_name_)
+        if (print_event_)
         {
             struct timespec tp;
             if (clock_gettime(CLOCK_MONOTONIC, &tp) < 0)
@@ -1164,7 +1164,8 @@ int main(int argc, char *argv[])
 
     std::unordered_map<__u64, std::osyncstream> osyncstream_map;
 
-    path_event_handler   path_handler{ .bpf_path_map_ = skeleton->maps.path_map };
+    bool print_path_event = env_equal("PRINT_PATH_EVENT", "true");
+    path_event_handler   path_handler{ .bpf_path_map_ = skeleton->maps.path_map, .print_event_ = print_path_event };
 
     execve_event_handler execve_handler;
     kill_event_handler   kill_handler;
@@ -1180,7 +1181,7 @@ int main(int argc, char *argv[])
     handler[EVENT_ID(sys_exit_read_event)]      = std::bind_front(&read_event_handler::exit,    &read_handler);
     handler[EVENT_ID(path_event)]               = std::ref(path_handler);
     handler[EVENT_ID(vm_area_event)]            = vm_area_handler{vm_area_map, false, false, 32};
-    handler[EVENT_ID(stack_event)]              = stack_handler{normalizer.get(), symbolizer.get(), vm_area_map, path_handler, osyncstream_map };
+    handler[EVENT_ID(stack_event)]              = stack_handler{normalizer.get(), symbolizer.get(), vm_area_map, path_handler, osyncstream_map};
     handler[EVENT_ID(sched_process_exit_event)] = handle_sched_process_exit;
     handler[EVENT_ID(do_coredump_event)]        = do_coredump_handler{osyncstream_map};
     handler[EVENT_ID(sys_exit_event)]           = exit_event_handler{osyncstream_map};

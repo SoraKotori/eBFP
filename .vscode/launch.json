@@ -47,6 +47,10 @@
                     "value": ""
                 },
                 {
+                    "name": "PRINT_PATH_EVENT",
+                    "value": "false"
+                },
+                {
                     "name": "ATTACH_EXECVE",
                     "value": "false"
                 },
