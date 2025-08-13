@@ -1201,6 +1201,13 @@ int main(int argc, char *argv[])
     if (!perf_buffer_ptr)
         throw std::system_error{-errno, std::system_category(), "perf_buffer__new"};
 
+    bool attach_execve = env_equal("ATTACH_EXECVE", "true");
+    bpf_program__set_autoattach(skeleton->progs.tracepoint__syscalls__sys_enter_execve, attach_execve);
+    bpf_program__set_autoattach(skeleton->progs.tracepoint__syscalls__sys_exit_execve,  attach_execve);
+
+    bool process_exit_execve = env_equal("ATTACH_PROCESS_EXIT", "true");
+    bpf_program__set_autoattach(skeleton->progs.tracepoint__sched__sched_process_exit, process_exit_execve);
+
     bool attach_read = env_equal("ATTACH_READ", "true");
     bpf_program__set_autoattach(skeleton->progs.tracepoint__syscalls__sys_enter_read, attach_read);
     bpf_program__set_autoattach(skeleton->progs.tracepoint__syscalls__sys_exit_read,  attach_read);

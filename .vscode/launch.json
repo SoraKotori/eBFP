@@ -47,6 +47,14 @@
                     "value": ""
                 },
                 {
+                    "name": "ATTACH_EXECVE",
+                    "value": "false"
+                },
+                {
+                    "name": "ATTACH_PROCESS_EXIT",
+                    "value": "false"
+                },
+                {
                     "name": "ATTACH_READ",
                     "value": "false"
                 },
