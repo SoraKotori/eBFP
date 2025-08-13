@@ -40,15 +40,15 @@
                 },
                 {
                     "name": "SYSCELL_FAIL",
-                    "value": "open,openat,openat2"
+                    "value": ""
                 },
                 {
                     "name": "SYSCELL_STACK",
-                    "value": "open,openat,openat2"
+                    "value": ""
                 },
                 {
                     "name": "ATTACH_READ",
-                    "value": "true"
+                    "value": "false"
                 },
                 {
                     "name": "ATTACH_MMAP",

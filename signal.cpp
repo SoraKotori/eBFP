@@ -990,6 +990,14 @@ auto parse_syscalls(Container &container, std::string_view value)
     }
 }
 
+auto env_equal(const char *name, const char *string)
+{
+    if (auto env_value = getenv(name))
+        return strcmp(name, string) == 0;
+
+    return false;
+}
+
 int main(int argc, char *argv[])
 {
     if  (auto env_value = getenv("OUTPUT_FILE"))
@@ -1041,12 +1049,7 @@ int main(int argc, char *argv[])
                                       command_pattern, sizeof(command_pattern), BPF_ANY)) < 0)
         throw std::system_error{-error, std::system_category(), "bpf_map__update_elem"};
 
-    __u32 read_content = false;
-    if (auto env_value = getenv("READ_CONTENT"))
-    {
-        if (std::string_view{"true"}.compare(env_value) == 0)
-            read_content = true;
-    }
+    __u32 read_content = env_equal("READ_CONTENT", "true");
 
     // update read_content flag to bpf map
     if ((error = bpf_map__update_elem(skeleton->maps.read_content,
@@ -1198,23 +1201,11 @@ int main(int argc, char *argv[])
     if (!perf_buffer_ptr)
         throw std::system_error{-errno, std::system_category(), "perf_buffer__new"};
 
-    bool attach_read = false;
-    if (auto env_value = getenv("ATTACH_READ"))
-    {
-        if (std::string_view{"true"}.compare(env_value) == 0)
-            attach_read = true;
-    }
-
+    bool attach_read = env_equal("ATTACH_READ", "true");
     bpf_program__set_autoattach(skeleton->progs.tracepoint__syscalls__sys_enter_read, attach_read);
     bpf_program__set_autoattach(skeleton->progs.tracepoint__syscalls__sys_exit_read,  attach_read);
 
-    bool attach_mmap = false;
-    if (auto env_value = getenv("ATTACH_MMAP"))
-    {
-        if (std::string_view{"true"}.compare(env_value) == 0)
-            attach_mmap = true;
-    }
-
+    bool attach_mmap = env_equal("ATTACH_MMAP", "true");
     bpf_program__set_autoattach(skeleton->progs.kprobe__do_mmap,    attach_mmap);
     bpf_program__set_autoattach(skeleton->progs.kretprobe__do_mmap, attach_mmap);
 
