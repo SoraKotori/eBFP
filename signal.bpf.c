@@ -622,8 +622,8 @@ int tracepoint__syscalls__sys_exit_execve(struct trace_event_raw_sys_exit *ctx)
 
     event.ktime = *ktime_ptr;
 
-    if (event.ret < 0)
-        CHECK_ERROR(bpf_map_delete_elem(&execve_map, &event.pid_tgid));
+    // 實際在 kernel 5.15.167.4 測試中，即使找不到 key 也不會回傳 -ENOENT
+    CHECK_ERROR(bpf_map_delete_elem(&execve_map, &event.pid_tgid));
 
     CHECK_ERROR(bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU,
                                       &event, sizeof(event)));
@@ -705,11 +705,6 @@ SEC("tracepoint/syscalls/sys_enter_read")
 int tracepoint__syscalls__sys_enter_read(struct trace_event_raw_sys_enter *ctx)
 {
     u64 pid_tgid = bpf_get_current_pid_tgid();
-
-    // 檢查 execve_map 判斷是否要處理 syscall
-    u64 *ktime_ptr = bpf_map_lookup_elem(&execve_map, &pid_tgid);
-    if (!ktime_ptr)
-        return 0;
 
     struct read_argument argument =
     {
@@ -854,8 +849,6 @@ int tracepoint__sched__sched_process_exit(struct trace_event_raw_sched_process_t
         .pid_tgid = bpf_get_current_pid_tgid()
     );
 
-    bpf_map_delete_elem(&execve_map, &event.pid_tgid);
-    
     struct task_struct *task = (struct task_struct *)bpf_get_current_task();
 
     CHECK_ERROR(BPF_CORE_READ_INTO(&event.exit_code, task, exit_code));

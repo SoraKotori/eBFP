@@ -993,7 +993,7 @@ auto parse_syscalls(Container &container, std::string_view value)
 auto env_equal(const char *name, const char *string)
 {
     if (auto env_value = getenv(name))
-        return strcmp(name, string) == 0;
+        return strcmp(env_value, string) == 0;
 
     return false;
 }
