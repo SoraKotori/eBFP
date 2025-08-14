@@ -105,3 +105,5 @@ target_link_options(    waitable_map_test PRIVATE -fsanitize=address,undefined $
 add_executable(syscall_name_to_nr_test syscall_name_to_nr_test.cpp)
 target_link_libraries(  syscall_name_to_nr_test PRIVATE syscall_name_to_nr)
 target_compile_features(syscall_name_to_nr_test PRIVATE cxx_std_23)
+
+add_subdirectory(tests)

@@ -790,22 +790,13 @@ struct stack_handler
         auto& ostream = node.mapped();
 
         const auto& areas = vm_area_map_.at(event->pid_tgid);
-        const auto  addrs = std::span<unsigned long>{event->addrs, event->addr_size};
-        for (const auto& addr : addrs)
+        for (auto addr : std::span{event->addrs, event->addr_size})
         {
             vm_area_event::vm_area key = { .vm_start = addr };
 
             auto find_area = areas.upper_bound(key);
             if  (find_area == std::begin(areas) || (--find_area)->vm_end <= key.vm_start)
             {
-                // addr: 0x000000f22ec4 elf: /root/.vscode-server/extensions/ms-vscode.cpptools-1.24.5-linux-x64/bin/cpptools-srv elf_off:   0xb22ec4, sym: std::__basic_file<char>::open(char const*, std::_Ios_Openmode, int), sym_addr: 0x00f22e90, sym_off: 0x00000034, file: basic_file.cc:260:16
-                // warning: not find area, start: 0x7ffc5c58d000, end: 0x7ffc5c58f000, addr: 0x2567646573257325
-                // addr: 0x000000f22ec4 elf: /root/.vscode-server/extensions/ms-vscode.cpptools-1.24.5-linux-x64/bin/cpptools-srv elf_off:   0xb22ec4, sym: std::__basic_file<char>::open(char const*, std::_Ios_Openmode, int), sym_addr: 0x00f22e90, sym_off: 0x00000034, file: basic_file.cc:260:16
-                // warning: not find area, start: 0x7ffc632bd000, end: 0x7ffc632bf000, addr: 0x2567646573257325
-                // addr: 0x000000f22ec4 elf: /root/.vscode-server/extensions/ms-vscode.cpptools-1.24.5-linux-x64/bin/cpptools-srv elf_off:   0xb22ec4, sym: std::__basic_file<char>::open(char const*, std::_Ios_Openmode, int), sym_addr: 0x00f22e90, sym_off: 0x00000034, file: basic_file.cc:260:16
-                // warning: not find area, start: 0x7fff0eb5f000, end: 0x7fff0eb61000, addr: 0x2567646573257325
-                // addr: 0x000000f22ec4 elf: /root/.vscode-server/extensions/ms-vscode.cpptools-1.24.5-linux-x64/bin/cpptools-srv elf_off:   0xb22ec4, sym: std::__basic_file<char>::open(char const*, std::_Ios_Openmode, int), sym_addr: 0x00f22e90, sym_off: 0x00000034, file: basic_file.cc:260:16
-                // warning: not find area, start: 0x7ffd427a2000, end: 0x7ffd427a4000, addr: 0x2567646573257325
                 // addr: 0x000000f22ec4 elf: /root/.vscode-server/extensions/ms-vscode.cpptools-1.24.5-linux-x64/bin/cpptools-srv elf_off:   0xb22ec4, sym: std::__basic_file<char>::open(char const*, std::_Ios_Openmode, int), sym_addr: 0x00f22e90, sym_off: 0x00000034, file: basic_file.cc:260:16
                 // warning: not find area, start: 0x7ffd9d5e7000, end: 0x7ffd9d5e9000, addr: 0x2567646573257325
                 // 有時候會出現很大的 stack address
@@ -816,7 +807,7 @@ struct stack_handler
                 continue;
             }
 
-            auto elf_off = addr - find_area->vm_start
+            auto elf_off = addr - find_area->vm_start - 1
                                 + find_area->vm_pgoff * 4096;
 
             if (find_area->path == path{})
@@ -1223,7 +1214,8 @@ int main(int argc, char *argv[])
 
     std::println(std::cout, "Successfully started! Ctrl+C to stop.");
 
-    auto next_time = std::chrono::system_clock::now();
+    auto next_time  = std::chrono::system_clock::now();
+    auto prev_event = 0;
 
     // 進入 poll loop
     while (!g_signal_status)
@@ -1233,10 +1225,17 @@ int main(int argc, char *argv[])
             throw std::system_error{-count, std::system_category(), "perf_buffer__poll"};
 
         auto time = std::chrono::system_clock::now();
-        if  (time > next_time)
+        if  (time < next_time)
+            continue;
+
+        next_time += std::chrono::seconds{1};
+
+        if (prev_event < handler.event_count())
         {
+            prev_event = handler.event_count();
+
             std::println(std::cout, "time: {}, handled event: {}", time, handler.event_count());
-            next_time += std::chrono::seconds{1};
+            std::cout.flush();
         }
     }
 
