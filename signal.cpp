@@ -22,6 +22,7 @@
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/types.h>
+#include <sys/resource.h>
 #include <dirent.h>
 
 #include <bpf/libbpf.h>
@@ -1059,7 +1060,7 @@ int main(int argc, char *argv[])
         .dev  = st.st_dev,
         .ino  = st.st_ino
     };
-
+    
     // update self to bpf map
     if ((error = bpf_map__update_elem(skeleton->maps.self_map,
                                       &zero, sizeof(zero),
@@ -1207,6 +1208,11 @@ int main(int argc, char *argv[])
     bool attach_mmap = env_equal("ATTACH_MMAP", "true");
     bpf_program__set_autoattach(skeleton->progs.kprobe__do_mmap,    attach_mmap);
     bpf_program__set_autoattach(skeleton->progs.kretprobe__do_mmap, attach_mmap);
+
+    bool attach_coredump = env_equal("ATTACH_COREDUMP", "true");
+    bpf_program__set_autoattach(skeleton->progs.kprobe__do_coredump,        false);
+    bpf_program__set_autoattach(skeleton->progs.kprobe__format_corename,    attach_coredump);
+    bpf_program__set_autoattach(skeleton->progs.kretprobe__format_corename, attach_coredump);
 
     // attach eBPF 程式到對應的 tracepoint
     if ((error = signal_bpf::attach(skeleton.get())) < 0)

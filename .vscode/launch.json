@@ -65,6 +65,10 @@
                 {
                     "name": "ATTACH_MMAP",
                     "value": "false"
+                },
+                {
+                    "name": "ATTACH_COREDUMP",
+                    "value": "true"
                 }
             ],
             "externalConsole": false,

@@ -24,8 +24,8 @@ int main()
     struct rlimit rlimit;
     if (getrlimit(RLIMIT_CORE, &rlimit) < 0)
         throw std::system_error{errno, std::system_category()};
-    else
-        std::println("RLIMIT_CORE: rlim_cur: {}, rlim_max:{}", rlimit.rlim_cur, rlimit.rlim_max);
+
+    std::println("RLIMIT_CORE: rlim_cur: {}, rlim_max:{}", rlimit.rlim_cur, rlimit.rlim_max);
 
     if (auto env_value = getenv("RLIMIT_CORE"))
         rlimit.rlim_cur = atoi(env_value);
@@ -34,6 +34,7 @@ int main()
 
     if (setrlimit(RLIMIT_CORE, &rlimit) < 0)
         throw std::system_error{errno, std::system_category()};
+
     std::println("RLIMIT_CORE: rlim_cur: {}, rlim_max:{}", rlimit.rlim_cur, rlimit.rlim_max);
 
     do_coredump();

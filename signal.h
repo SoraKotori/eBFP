@@ -25,7 +25,8 @@
     MAKE_EVENT_ID(sched_process_exit_event) \
     MAKE_EVENT_ID(do_coredump_event) \
     MAKE_EVENT_ID(sys_exit_event) \
-    MAKE_EVENT_ID(do_mmap_event)
+    MAKE_EVENT_ID(do_mmap_event) \
+    MAKE_EVENT_ID(format_corename_event)
 
 #define EVENT_ID(EVENT_TYPE) EVENT_TYPE##_ID
 
@@ -167,6 +168,21 @@ struct do_coredump_event
     __u64 ktime;
     int si_signo;
     int si_code;
+};
+
+#define CORENAME_MAX_SIZE 128
+
+struct format_corename_event
+{
+    struct event_base base;
+
+    PID_TGID_UNION;
+    __u64 ktime;
+    struct rlimit rlim;
+    struct siginfo siginfo;
+	int used;
+	int size;
+    char corename[CORENAME_MAX_SIZE];
 };
 
 struct sys_exit_event

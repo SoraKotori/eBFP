@@ -901,6 +901,94 @@ int BPF_KPROBE(kprobe__do_coredump, const kernel_siginfo_t *siginfo)
     return 0;
 }
 
+struct format_corename_arg
+{
+    struct core_name *cn;
+    struct coredump_params *cprm;
+    size_t **argv;
+    int *argc;
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, MAX_ENTRIES);
+    __type(key, u64);
+    __type(value, struct format_corename_arg);
+} format_corename_map SEC(".maps");
+
+SEC("kprobe/format_corename")
+int BPF_KPROBE(kprobe__format_corename,
+               struct core_name *cn, struct coredump_params *cprm,
+			   size_t **argv, int *argc)
+{
+    struct format_corename_arg arg =
+    {
+        .cn   = cn,
+        .cprm = cprm,
+        .argv = argv,
+        .argc = argc
+    };
+
+    u64 pid_tgid = bpf_get_current_pid_tgid();
+    CHECK_ERROR(bpf_map_update_elem(&format_corename_map, &pid_tgid, &arg, BPF_NOEXIST));
+
+    return 0;
+}
+
+#define RLIMIT_CORE 4 /* max core file size */
+
+SEC("kretprobe/format_corename")
+int BPF_KRETPROBE(kretprobe__format_corename, long ret)
+{
+    u64 pid_tgid = bpf_get_current_pid_tgid();
+    struct format_corename_arg *arg = bpf_map_lookup_elem(&format_corename_map, &pid_tgid);
+    if (!arg)
+        return 0;
+
+    if (ret < 0)
+    {
+        CHECK_ERROR(bpf_map_delete_elem(&format_corename_map, &pid_tgid));
+        return 0;
+    }
+
+    struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+
+    // task->signal->rlim[RLIMIT_CORE].rlim_cur
+    // struct rlimit *rlim = NULL;
+    // CHECK_ERROR(BPF_CORE_READ_INTO(&rlim, task, signal, rlim));
+
+    // rlim += RLIMIT_CORE;
+
+    // task->signal->rlim[RLIMIT_CORE].rlim_cur
+    // BPF_CORE_READ(task, signal, rlim[RLIMIT_CORE].rlim_cur);
+    
+    const kernel_siginfo_t *siginfo = BPF_CORE_READ(arg->cprm, siginfo);
+
+    INIT_EVENT(event, format_corename_event,
+        .pid_tgid = pid_tgid,
+        .ktime    = bpf_ktime_get_ns(),
+        .rlim     = BPF_CORE_READ(task, signal, rlim[RLIMIT_CORE]),
+        .siginfo  = BPF_CORE_READ(arg->cprm, siginfo),
+        .used     = BPF_CORE_READ(arg->cn,   used),
+        .size     = BPF_CORE_READ(arg->cn,   size)
+    );
+    const char *corename = BPF_CORE_READ(arg->cn, corename);
+    CHECK_ERROR(bpf_map_delete_elem(&format_corename_map, &pid_tgid));
+
+    event.size &= CORENAME_MAX_SIZE;
+    bpf_core_read(event.corename, event.size, corename);
+
+    CHECK_ERROR(bpf_perf_event_output(
+        ctx, &events, BPF_F_CURRENT_CPU, &event, 
+        offsetof(struct format_corename_event, corename) + event.size));
+
+    // 初始化 vm_area_event，使用 pid_tgid 和 ktime 來串接 event
+    CHECK_ERROR(init_vm_area_event(event.pid_tgid, event.ktime));
+    CHECK_TAIL_CALL_STATIC(ctx, &kprobe_array_map, TAILCALL_VM_AREA);
+
+    return 0;  
+}
+
 SEC("raw_tracepoint/sys_exit")
 int raw_tracepoint__sys_exit(struct bpf_raw_tracepoint_args *ctx)
 {
